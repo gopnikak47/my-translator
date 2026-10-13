@@ -35,6 +35,9 @@ pub struct Settings {
     pub target_language: String,
     /// Audio source: "system" | "microphone" | "both"
     pub audio_source: String,
+    /// Microphone input device name ("" = system default input).
+    #[serde(default)]
+    pub input_device: String,
     /// Overlay opacity: 0.0 - 1.0
     pub overlay_opacity: f64,
     /// Font size in px
@@ -116,6 +119,7 @@ impl Default for Settings {
             source_language: "auto".to_string(),
             target_language: "vi".to_string(),
             audio_source: "system".to_string(),
+            input_device: String::new(),
             overlay_opacity: 0.85,
             font_size: 16,
             max_lines: 5,
@@ -236,6 +240,7 @@ mod tests {
         assert_eq!(s.openai_api_key, "sk-openai");
         assert_eq!(s.translation_mode, "openai");
         assert_eq!(s.live, live_core::LiveSettings::default());
+        assert_eq!(s.input_device, "", "old files fall back to the default input");
         // And it round-trips with the new block.
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.live, s.live);

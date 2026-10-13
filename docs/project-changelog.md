@@ -13,6 +13,7 @@ Format: `## v<version> - <YYYY-MM-DD>` followed by content until the next `## v`
 - **🎬 Event tab**: bilingual EN ↔ VI broadcast subtitles for vMix / OBS — OpenAI Realtime (`gpt-realtime-translate`) with automatic language switching (two prewarmed sessions or one switching session), EN→VI and VI→EN one-way modes, Soniox manual fallback.
 - **Local overlay server** (`http://127.0.0.1:8765/overlay?screen=left|right|both|canvas`): transparent, SSE push, auto-reconnect, display mode A (opposite of speaker) / B (fixed language per screen), per-screen styling, single-HDMI canvas regions, emergency hide/freeze/clear (buttons, hotkeys, token-protected HTTP control API).
 - Audio input device selection (USB interfaces), level meter, clipping/disconnect alerts, automatic device reopen, silence bridging.
+- **Main Live tab: microphone device picker** next to the audio-source selector (shown for Mic / Both). Works with every engine (Soniox, OpenAI, Qwen, Local); switching while translating restarts capture on the new device. The choice is saved (`input_device`).
 - Performance & health panel: per-stage latency (median / P95 / worst), reconnects, session rotations, memory.
 
 ### Changed

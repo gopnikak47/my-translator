@@ -2385,6 +2385,13 @@ body:not(.activity-live) .floating-controls { display: none; }
   font-size: 11px;
 }
 
+/* Mic input device picker (shown when source uses the microphone) */
+.source-select.device-select {
+  margin-left: 6px;
+  max-width: 170px;
+  text-overflow: ellipsis;
+}
+
 .live-action-row {
   flex-shrink: 0;
   position: relative;

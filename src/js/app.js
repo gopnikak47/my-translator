@@ -330,6 +330,13 @@ class App {
             this._setSource(e.target.value);
         });
 
+        // Microphone device picker: rescan on open so newly plugged-in
+        // devices (USB interface, wireless receiver) appear without restart.
+        const devSel = document.getElementById('select-audio-device');
+        devSel?.addEventListener('mousedown', () => this._refreshInputDevices());
+        devSel?.addEventListener('focus', () => this._refreshInputDevices());
+        devSel?.addEventListener('change', (e) => this._setInputDevice(e.target.value));
+
         // Clear button — clears display only (auto-save happens on stop)
         document.getElementById('btn-clear').addEventListener('click', async () => {
             this.transcriptUI.clear();
@@ -1055,6 +1062,7 @@ class App {
         // Update current source button states
         this.currentSource = settings.audio_source || 'system';
         this._updateSourceButtons();
+        this._refreshInputDevices();
 
         // TTS is always OFF on app start — user must toggle on each session
         this.ttsEnabled = false;
@@ -1869,6 +1877,55 @@ class App {
     _updateSourceButtons() {
         const sel = document.getElementById('select-audio-source');
         if (sel) sel.value = this.currentSource;
+        const dev = document.getElementById('select-audio-device');
+        if (dev) dev.style.display = this.currentSource === 'system' ? 'none' : '';
+    }
+
+    /** Selected microphone device name, or null for the system default. */
+    _captureDevice() {
+        if (this.currentSource === 'system') return null;
+        return settingsManager.get().input_device || null;
+    }
+
+    /** Fill the microphone picker from the backend device list. */
+    async _refreshInputDevices() {
+        const sel = document.getElementById('select-audio-device');
+        if (!sel) return;
+        let devices = [];
+        try {
+            devices = (await invoke('audio_list_input_devices')) || [];
+        } catch (err) {
+            console.warn('[App] list input devices failed:', err);
+        }
+        const current = settingsManager.get().input_device || '';
+        const opts = [['', '🎙 Mặc định hệ thống']];
+        for (const d of devices) {
+            opts.push([d.name, `${d.name}${d.is_default ? ' (mặc định)' : ''}`]);
+        }
+        if (current && !devices.some((d) => d.name === current)) {
+            opts.push([current, `${current} (chưa kết nối)`]);
+        }
+        const html = opts.map(([v, l]) => `<option value="${this._escAttr(v)}">${this._esc(l)}</option>`).join('');
+        if (html !== this._deviceOptionsHtml) {
+            this._deviceOptionsHtml = html;
+            sel.innerHTML = html;
+        }
+        sel.value = current;
+        sel.title = `Thiết bị micro: ${current || 'mặc định hệ thống'}`;
+    }
+
+    /** Change microphone device; restarts capture if a session is running. */
+    async _setInputDevice(name) {
+        await settingsManager.save({ input_device: name });
+        const label = name || 'mặc định hệ thống';
+        if (this.isRunning && this.currentSource !== 'system') {
+            await this.pause();
+            this._showToast(`Đổi micro: ${label}`, 'success');
+            await this.start();
+        } else {
+            this._showToast(`Micro: ${label}`, 'success');
+        }
+        this._refreshInputDevices();
     }
 
     // ─── Engine picker (Standard vs OpenAI) ──────────────────
@@ -2389,6 +2446,7 @@ class App {
             console.log('[OpenAI] Starting audio capture, source:', this.currentSource);
             await invoke('start_capture', {
                 source: this.currentSource,
+                device: this._captureDevice(),
                 channel,
             });
             console.log('[OpenAI] start_capture invoked OK');
@@ -2470,6 +2528,7 @@ class App {
             console.log('[Qwen] Starting audio capture, source:', this.currentSource);
             await invoke('start_capture', {
                 source: this.currentSource,
+                device: this._captureDevice(),
                 channel,
             });
             console.log('[Qwen] start_capture invoked OK');
@@ -2515,6 +2574,7 @@ class App {
             console.log('[App] Starting audio capture, source:', this.currentSource);
             await invoke('start_capture', {
                 source: this.currentSource,
+                device: this._captureDevice(),
                 channel: channel,
             });
             console.log('[App] Audio capture started successfully');
@@ -2534,6 +2594,7 @@ class App {
         try {
             await invoke('start_capture', {
                 source: this.currentSource,
+                device: this._captureDevice(),
                 channel: new window.__TAURI__.core.Channel(), // dummy channel for permission check
             });
             await invoke('stop_capture');
@@ -2623,6 +2684,7 @@ class App {
 
             await invoke('start_capture', {
                 source: this.currentSource,
+                device: this._captureDevice(),
                 channel: audioChannel,
             });
             console.log('[App] Audio capture started');
