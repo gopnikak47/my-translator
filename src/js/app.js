@@ -19,6 +19,7 @@ import { updater } from './updater.js';
 import { sessionStore } from './session-store.js';
 import { QWEN_LANGS } from './qwen-langs.js';
 import { EventConsole } from './event-console.js';
+import { DEFAULT_FILLERS, makeFillerFilter, parseFillerList } from './filler-filter.js';
 import {
     initShell, setActivity, getActivity, setLiveBadge, bindMenu, initWindowModes,
     startAutoHideWatch, stopAutoHideWatch, toggleManualCompact, isAutoHideEnabled, setAutoHideEnabled,
@@ -1029,7 +1030,34 @@ class App {
 
     // ─── Apply Settings ────────────────────────────────────
 
+    /** Caption options shared by the main window and the Event overlays. */
+    _captionSettings() {
+        const c = settingsManager.get().live?.captions || {};
+        return {
+            filter_fillers: c.filter_fillers !== false,
+            filler_words: Array.isArray(c.filler_words) ? c.filler_words : [...DEFAULT_FILLERS],
+        };
+    }
+
+    async _saveCaptionSettings(patch) {
+        const live = JSON.parse(JSON.stringify(settingsManager.get().live || {}));
+        live.captions = { ...(live.captions || {}), ...patch };
+        try {
+            await settingsManager.save({ live });
+        } catch (err) {
+            this._showToast(`Không lưu được cài đặt: ${err}`, 'error');
+        }
+    }
+
+    _applyFillerFilter() {
+        const c = this._captionSettings();
+        this.transcriptUI?.setTextFilter(c.filter_fillers ? makeFillerFilter(c.filler_words) : null);
+        const btn = document.getElementById('btn-filler-toggle');
+        if (btn) btn.textContent = `${c.filter_fillers ? '✓' : '　'} Lọc từ đệm (ừm, à, oh…)`;
+    }
+
     _applySettings(settings) {
+        this._applyFillerFilter();
         // Update overlay opacity
         const overlayView = document.getElementById('overlay-view');
         overlayView.style.opacity = settings.overlay_opacity || 0.85;
@@ -1608,6 +1636,20 @@ class App {
         autoHideBtn?.addEventListener('click', () => {
             setAutoHideEnabled(!isAutoHideEnabled());
             renderAutoHide();
+        });
+        // Filler-word filter (shared with the Event overlays: settings.live.captions)
+        document.getElementById('btn-filler-toggle')?.addEventListener('click', () => {
+            const c = this._captionSettings();
+            this._saveCaptionSettings({ filter_fillers: !c.filter_fillers });
+        });
+        document.getElementById('btn-filler-edit')?.addEventListener('click', () => {
+            const c = this._captionSettings();
+            const cur = (c.filler_words || DEFAULT_FILLERS).join(', ');
+            const next = prompt('Từ đệm sẽ bị ẩn (mỗi từ cách nhau bằng dấu phẩy, chỉ từ đơn).\nĐể trống = dùng danh sách mặc định.', cur);
+            if (next == null) return;
+            const words = parseFillerList(next);
+            this._saveCaptionSettings({ filler_words: words.length ? words : [...DEFAULT_FILLERS], filter_fillers: true });
+            this._showToast(`Lọc ${words.length || DEFAULT_FILLERS.length} từ đệm`, 'success');
         });
         document.getElementById('btn-read-play')?.addEventListener('click', () => {
             // Play doubles as Resume when paused — do NOT rebuild the reader.

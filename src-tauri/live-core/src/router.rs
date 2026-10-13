@@ -17,6 +17,7 @@
 //! of the spoken language, display mode B (`Fixed`) always shows one language.
 
 use crate::captions::{tail_chars, Segment, Track};
+use crate::filler::FillerFilter;
 use crate::config::{CaptionConfig, FinalMode, ScreenLanguage, TranslationMode};
 use crate::lang::{is_vi_char, strong_hint, Lang, LangDetector};
 use serde::Serialize;
@@ -149,6 +150,8 @@ pub struct RouterStatus {
 
 pub struct CaptionRouter {
     cfg: CaptionConfig,
+    /// Compiled filler filter (None when filtering is off).
+    filler: Option<FillerFilter>,
     mode: TranslationMode,
     tracks: [Track; 2],
     detector: LangDetector,
@@ -179,6 +182,7 @@ impl CaptionRouter {
         detector.set_current(Some(spoken));
         let max = cfg.max_segment_chars;
         Self {
+            filler: compile_filler(&cfg),
             cfg,
             mode,
             tracks: [Track::new(Lang::En, max), Track::new(Lang::Vi, max)],
@@ -213,6 +217,7 @@ impl CaptionRouter {
         for t in self.tracks.iter_mut() {
             t.set_max_segment_chars(cfg.max_segment_chars);
         }
+        self.filler = compile_filler(&cfg);
         self.cfg = cfg;
     }
 
@@ -550,6 +555,10 @@ impl CaptionRouter {
                 }
             }
         }
+        if let Some(f) = &self.filler {
+            stable = f.apply(&stable);
+            tentative = f.apply(&tentative);
+        }
         // Bound payload: keep the newest text (the overlay clips to max lines).
         let total = stable.chars().count() + tentative.chars().count();
         if total > cfg.max_chars {
@@ -659,15 +668,30 @@ impl CaptionRouter {
 
     fn record_completed(&mut self, lang: Lang, segs: Vec<Segment>) {
         for s in segs {
+            let text = match &self.filler {
+                Some(f) => f.apply(&s.text),
+                None => s.text,
+            };
+            if text.trim().is_empty() {
+                continue;
+            }
             self.completed.push(CompletedSegment {
                 lang,
                 spoken: self.spoken,
                 kind: if lang == self.spoken { "original" } else { "translation" },
                 id: s.id,
-                text: s.text,
+                text,
             });
         }
     }
+}
+
+fn compile_filler(cfg: &CaptionConfig) -> Option<FillerFilter> {
+    if !cfg.filter_fillers {
+        return None;
+    }
+    let f = FillerFilter::new(&cfg.filler_words);
+    (!f.is_empty()).then_some(f)
 }
 
 fn normalize_word(w: &str) -> String {
@@ -933,6 +957,24 @@ mod tests {
         r.ingest_tokens(Stream::Source, Some(Lang::Vi), "Cảm ơn", "", false, now);
         assert_eq!(r.spoken(), Lang::Vi);
         assert_eq!(r.render(ScreenId::Left).stable, "Xin chào Cảm ơn");
+    }
+
+    #[test]
+    fn filler_words_are_hidden_on_screen_and_in_log() {
+        let mut r = CaptionRouter::new(cfg(), TranslationMode::EnToVi, Lang::En);
+        let now = Instant::now();
+        r.source_delta("Um, so", now);
+        // Filler split across deltas is still removed once complete.
+        r.translation_delta(Lang::Vi, "Ừ", now);
+        r.translation_delta(Lang::Vi, "m, chúng ta bắt đầu. Tiếp", now);
+        assert_eq!(r.render(ScreenId::Left).stable, "Chúng ta bắt đầu. Tiếp");
+        let done: Vec<_> = r.take_completed().into_iter().map(|c| c.text).collect();
+        assert_eq!(done, ["Chúng ta bắt đầu."]);
+        // Turning the filter off shows the raw text again.
+        let mut c = cfg();
+        c.filter_fillers = false;
+        r.set_config(c);
+        assert_eq!(r.render(ScreenId::Left).stable, "Ừm, chúng ta bắt đầu. Tiếp");
     }
 
     #[test]

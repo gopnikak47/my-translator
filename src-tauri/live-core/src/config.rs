@@ -99,6 +99,10 @@ pub struct CaptionConfig {
     /// How long translated text for a language equal to the detected spoken
     /// language is held before being discarded as an echo (bilingual routing).
     pub echo_hold_ms: u64,
+    /// Remove filler words (ừm, à, oh, uh…) from displayed captions.
+    pub filter_fillers: bool,
+    /// Single words treated as fillers (case-insensitive, stretched forms match).
+    pub filler_words: Vec<String>,
 }
 
 impl Default for CaptionConfig {
@@ -113,6 +117,8 @@ impl Default for CaptionConfig {
             final_mode: FinalMode::Rollup,
             tentative_style: TentativeStyle::Dim,
             echo_hold_ms: 900,
+            filter_fillers: true,
+            filler_words: crate::filler::DEFAULT_FILLERS.iter().map(|s| s.to_string()).collect(),
         }
     }
 }
@@ -332,6 +338,13 @@ impl LiveSettings {
         c.max_segment_chars = c.max_segment_chars.clamp(30, 1000);
         c.max_chars = c.max_chars.clamp(40, 4000);
         c.echo_hold_ms = c.echo_hold_ms.min(5000);
+        c.filler_words = c
+            .filler_words
+            .iter()
+            .map(|w| w.trim().to_string())
+            .filter(|w| !w.is_empty() && w.chars().count() <= 32)
+            .take(200)
+            .collect();
         self.openai_chunk_ms = self.openai_chunk_ms.clamp(20, 400);
         for s in [&mut self.left, &mut self.right] {
             s.max_lines = s.max_lines.clamp(1, 10);

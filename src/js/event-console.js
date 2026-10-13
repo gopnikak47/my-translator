@@ -12,6 +12,7 @@
 import { settingsManager } from './settings.js';
 import { SonioxClient } from './soniox.js';
 import { mapSonioxTokens, sonioxConfigForMode } from './live-soniox-map.js';
+import { parseFillerList } from './filler-filter.js';
 
 const { invoke, Channel } = window.__TAURI__.core;
 
@@ -228,6 +229,8 @@ export class EventConsole {
               <label>Completed sentences<select data-path="captions.final_mode">
                 <option value="rollup">Roll up (keep previous lines)</option>
                 <option value="replace">Replace (current sentence only)</option></select></label>
+              <label class="ev-check"><input type="checkbox" data-path="captions.filter_fillers"> Hide filler words (ừm, à, oh, uh…)</label>
+              <label class="ev-wide">Filler words (comma separated)<input type="text" data-path="captions.filler_words" data-kind="list" spellcheck="false"></label>
               <label>Revisable text style<select data-path="captions.tentative_style">
                 <option value="dim">Dimmed</option><option value="italic">Italic</option><option value="same">Same as stable</option></select></label>
             </div>
@@ -332,6 +335,7 @@ export class EventConsole {
         let v;
         if (el.type === 'checkbox') v = el.checked;
         else if (el.dataset.kind === 'lang') v = valueToLang(el.value);
+        else if (el.dataset.kind === 'list') v = parseFillerList(el.value);
         else if (el.dataset.kind === 'float') v = parseFloat(el.value);
         else if (el.type === 'number' || el.dataset.kind === 'int') v = parseInt(el.value, 10);
         else v = el.value;
@@ -374,6 +378,7 @@ export class EventConsole {
             const v = getPath(live, el.dataset.path);
             if (el.type === 'checkbox') el.checked = !!v;
             else if (el.dataset.kind === 'lang') el.value = langToValue(v);
+            else if (el.dataset.kind === 'list') el.value = Array.isArray(v) ? v.join(', ') : '';
             else if (el.id === 'ev-device') this._selectDevice(v || '');
             else if (v !== undefined && v !== null) el.value = String(v);
         });

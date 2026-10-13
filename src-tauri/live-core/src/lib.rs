@@ -8,6 +8,7 @@ pub mod audio;
 pub mod captions;
 pub mod config;
 pub mod engine;
+pub mod filler;
 pub mod hub;
 pub mod lang;
 pub mod metrics;
