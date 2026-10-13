@@ -1923,6 +1923,45 @@ class App {
         if (dev) dev.style.display = this.currentSource === 'system' ? 'none' : '';
     }
 
+    /** Poll the capture level/health while a session runs (meter + warnings). */
+    _startMicMeter() {
+        const meter = document.getElementById('mic-meter');
+        const fill = document.getElementById('mic-meter-fill');
+        if (!meter || !fill || this._micMeterTimer) return;
+        meter.style.display = '';
+        this._micWarned = false;
+        this._micMeterTimer = setInterval(async () => {
+            if (!this.isRunning) return this._stopMicMeter();
+            let a;
+            try { a = await invoke('audio_status'); } catch { return; }
+            const pct = Math.min(100, Math.round(Math.sqrt(a.peak || 0) * 100));
+            fill.style.width = pct + '%';
+            const noData = a.ms_since_audio == null || a.ms_since_audio > 2000;
+            const silent = !noData && (a.peak || 0) < 0.003;
+            meter.classList.toggle('bad', a.state !== 'running' || noData);
+            meter.classList.toggle('warn', !!a.clipping_recent || silent);
+            let msg = '';
+            if (a.state === 'reconnecting') msg = `Mất tín hiệu micro — đang kết nối lại${a.error ? ': ' + a.error : ''}`;
+            else if (noData) msg = `Micro "${a.device || 'mặc định'}" không gửi âm thanh. Kiểm tra receiver đã bật/kết nối với bộ phát chưa.`;
+            else if (a.clipping_recent) msg = 'Âm thanh bị vỡ (clipping) — giảm gain trên receiver/mixer.';
+            meter.title = `${a.device || 'Micro'} · ${a.sample_rate ? a.sample_rate / 1000 + ' kHz' : ''} · peak ${(a.peak || 0).toFixed(3)}` +
+                (a.stream_errors ? ` · ${a.stream_errors} lỗi driver` : '') + (a.device_reconnects ? ` · ${a.device_reconnects} lần kết nối lại` : '');
+            if (msg && !this._micWarned) {
+                this._micWarned = true;
+                this._showToast(msg, 'error');
+            } else if (!msg) {
+                this._micWarned = false;
+            }
+        }, 250);
+    }
+
+    _stopMicMeter() {
+        clearInterval(this._micMeterTimer);
+        this._micMeterTimer = null;
+        const meter = document.getElementById('mic-meter');
+        if (meter) meter.style.display = 'none';
+    }
+
     /** Selected microphone device name, or null for the system default. */
     _captureDevice() {
         if (this.currentSource === 'system') return null;
@@ -2403,6 +2442,8 @@ class App {
         } else {
             await this._startSonioxMode(settings);
         }
+
+        if (this.isRunning) this._startMicMeter();
 
         // Start TTS if enabled — skipped in realtime modes (built-in audio)
         if (this.ttsEnabled && this.translationMode !== 'openai' && this.translationMode !== 'qwen') {
@@ -2898,6 +2939,7 @@ class App {
     // into a new file is stopSession()'s job.
     async pause() {
         this.isRunning = false;
+        this._stopMicMeter();
         this._updateStartButton();
         this._setEnginePillLocked(false);
 

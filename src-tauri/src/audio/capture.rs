@@ -333,3 +333,44 @@ fn dispatch(rx: mpsc::Receiver<Frame>, sinks: Arc<Mutex<Sinks>>, stats: Arc<Audi
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Feed device-like frames (48 kHz, 10 ms callbacks, speech level) through
+    /// the real dispatcher and check the webview channel receives 16 kHz PCM16.
+    #[test]
+    fn dispatcher_delivers_16k_audio_to_webview_channel() {
+        let received: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let r2 = received.clone();
+        let ch: Channel<InvokeResponseBody> = Channel::new(move |body| {
+            if let InvokeResponseBody::Raw(b) = body {
+                r2.lock().unwrap().extend_from_slice(&b);
+            }
+            Ok(())
+        });
+        let sinks = Arc::new(Mutex::new(Sinks { legacy: Some(ch), live: None }));
+        let (tx, rx) = mpsc::sync_channel::<Frame>(FRAME_QUEUE);
+        let stop = Arc::new(AtomicBool::new(false));
+        let (s2, st2) = (sinks.clone(), stop.clone());
+        let stats = Arc::new(AudioStats::default());
+        let t = std::thread::spawn(move || dispatch(rx, s2, stats, Arc::new(Metrics::new()), st2));
+        // 1 s of a 300 Hz tone at 48 kHz in 480-sample callbacks.
+        for n in 0..100 {
+            let samples: Vec<f32> = (0..480)
+                .map(|i| ((n * 480 + i) as f32 * 2.0 * std::f32::consts::PI * 300.0 / 48_000.0).sin() * 0.3)
+                .collect();
+            tx.send(Frame { samples, rate: 48_000, at: Instant::now(), source: 0 }).unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        stop.store(true, Ordering::SeqCst);
+        t.join().unwrap();
+        let bytes = received.lock().unwrap().clone();
+        let n = bytes.len() / 2;
+        assert!((15_000..=16_100).contains(&n), "expected ~16000 samples, got {n}");
+        let peak = bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs()).max().unwrap();
+        assert!(peak > 8000, "audio too quiet / silent: peak {peak}");
+    }
+}

@@ -133,6 +133,8 @@ if (!window.__TAURI__ && location.port === '3111') {
                             { name: 'Microphone (Realtek Audio)', is_default: true, channels: 2, sample_rate: 48000 },
                             { name: 'Focusrite USB (Scarlett 2i2)', is_default: false, channels: 2, sample_rate: 48000 },
                         ];
+                    case 'audio_status':
+                        return mockLiveStatus().audio;
                     case 'live_status':
                         return mockLiveStatus();
                     case 'live_start':

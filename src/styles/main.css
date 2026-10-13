@@ -2385,6 +2385,25 @@ body:not(.activity-live) .floating-controls { display: none; }
   font-size: 11px;
 }
 
+/* Input level meter (shown while translating) */
+.mic-meter {
+  width: 44px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.mic-meter > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--success);
+}
+.mic-meter.warn > span { background: var(--warning); }
+.mic-meter.bad { outline: 1px solid var(--error); }
+
 /* Mic input device picker (shown when source uses the microphone) */
 .source-select.device-select {
   margin-left: 6px;

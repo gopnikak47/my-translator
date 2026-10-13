@@ -41,6 +41,8 @@ pub struct AudioStats {
     pub frames_dropped: AtomicU64,
     pub device_reconnects: AtomicU64,
     pub silence_filled_ms: AtomicU64,
+    /// Errors reported by the audio driver (non-fatal ones included).
+    pub stream_errors: AtomicU64,
     state: Mutex<(String, Option<String>, String, u32)>, // (state, error, device, rate)
 }
 
@@ -59,6 +61,7 @@ pub struct AudioStatusView {
     pub frames_dropped: u64,
     pub device_reconnects: u64,
     pub silence_filled_ms: u64,
+    pub stream_errors: u64,
 }
 
 impl AudioStats {
@@ -107,6 +110,7 @@ impl AudioStats {
             frames_dropped: self.frames_dropped.load(Ordering::Relaxed),
             device_reconnects: self.device_reconnects.load(Ordering::Relaxed),
             silence_filled_ms: self.silence_filled_ms.load(Ordering::Relaxed),
+            stream_errors: self.stream_errors.load(Ordering::Relaxed),
         }
     }
 }
@@ -265,6 +269,29 @@ fn find_device(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device, St
     }
 }
 
+/// Device's default input format, falling back to a supported one (prefer
+/// f32, then 48 kHz) for drivers that do not report a default.
+fn input_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, String> {
+    match device.default_input_config() {
+        Ok(c) => Ok(c),
+        Err(e) => {
+            let configs: Vec<_> = device.supported_input_configs().map_err(|e2| format!("{e}; {e2}"))?.collect();
+            let pick = configs
+                .iter()
+                .find(|c| c.sample_format() == cpal::SampleFormat::F32)
+                .or_else(|| configs.first())
+                .copied()
+                .ok_or_else(|| format!("{e}; no supported input formats"))?;
+            let rate = if pick.min_sample_rate().0 <= 48_000 && pick.max_sample_rate().0 >= 48_000 {
+                cpal::SampleRate(48_000)
+            } else {
+                pick.max_sample_rate()
+            };
+            Ok(pick.with_sample_rate(rate))
+        }
+    }
+}
+
 fn open_stream(
     device_name: Option<&str>,
     tx: SyncSender<Frame>,
@@ -275,9 +302,7 @@ fn open_stream(
     let host = cpal::default_host();
     let device = find_device(&host, device_name)?;
     let name = device.name().unwrap_or_default();
-    let config = device
-        .default_input_config()
-        .map_err(|e| format!("cannot read input format of \"{name}\": {e}"))?;
+    let config = input_config(&device).map_err(|e| format!("cannot read input format of \"{name}\": {e}"))?;
     let rate = config.sample_rate().0;
     let channels = config.channels() as usize;
     stats.set_device(&name, rate);
@@ -287,9 +312,17 @@ fn open_stream(
         buffer_size: cpal::BufferSize::Default,
     };
     let err_flag = failed.clone();
+    let err_stats = stats.clone();
     let err_fn = move |err: cpal::StreamError| {
         eprintln!("[mic] stream error: {err}");
-        err_flag.store(true, Ordering::SeqCst);
+        err_stats.stream_errors.fetch_add(1, Ordering::Relaxed);
+        // Only a vanished device needs reopening. Other backend errors are
+        // usually transient glitches (common with USB / wireless receivers);
+        // reopening on them would drop audio repeatedly. A stream that really
+        // stops delivering is caught by the stall watchdog instead.
+        if matches!(err, cpal::StreamError::DeviceNotAvailable) {
+            err_flag.store(true, Ordering::SeqCst);
+        }
     };
 
     // Shared per-callback handling for every sample format.
