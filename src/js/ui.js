@@ -35,6 +35,18 @@ export class TranscriptUI {
         this.currentSpeaker = null; // Track current speaker to detect changes
         this.currentLanguage = null; // Track current language to detect changes
         this.lastConfidence = null; // Last confidence score from Soniox
+        // Display-only text filter (filler words). Stored segments stay raw.
+        this.textFilter = (t) => t;
+    }
+
+    /** Set the display filter and re-render. */
+    setTextFilter(fn) {
+        this.textFilter = typeof fn === 'function' ? fn : (t) => t;
+        if (this.contentEl) this._render();
+    }
+
+    _f(text) {
+        return text ? this.textFilter(text) : text;
     }
 
     get provider() {
@@ -428,16 +440,18 @@ export class TranscriptUI {
                 lastRenderedLang = seg.language;
             }
 
-            if (seg.status === 'translated' && seg.translation) {
+            const shownTranslation = this._f(seg.translation);
+            if (seg.status === 'translated' && shownTranslation && shownTranslation.trim()) {
                 const confidenceClass = (seg.confidence !== null && seg.confidence < 0.7) ? ' low-confidence' : '';
                 html += `<div class="seg-block">`;
-                html += `<div class="seg-translated${confidenceClass}">${this._esc(seg.translation)}</div>`;
+                html += `<div class="seg-translated${confidenceClass}">${this._esc(shownTranslation)}</div>`;
                 html += `</div>`;
             }
             // Skip 'original' segments in single mode — wait for translation
         }
 
-        if (this.provisionalText) {
+        const shownProvisional = this._f(this.provisionalText);
+        if (shownProvisional && shownProvisional.trim()) {
             if (this.provisionalSpeaker && this.provisionalSpeaker !== lastRenderedSpeaker) {
                 html += `<span class="speaker-label">Speaker ${this.provisionalSpeaker}:</span> `;
             }
@@ -451,7 +465,7 @@ export class TranscriptUI {
             // provisionalText for source ASR → keep dim italic.
             const isTargetStream = this.sourceProvisionalText || this.provider === 'qwen';
             const cls = isTargetStream ? 'seg-translated' : 'seg-provisional';
-            html += `<div class="seg-block"><div class="${cls}">${this._esc(this.provisionalText)}</div></div>`;
+            html += `<div class="seg-block"><div class="${cls}">${this._esc(shownProvisional)}</div></div>`;
         }
 
         this.contentEl.innerHTML = html;
@@ -492,12 +506,12 @@ export class TranscriptUI {
             if (seg.status === 'translated' && seg.translation) {
                 const confidenceClass = (seg.confidence !== null && seg.confidence < 0.7) ? ' low-confidence' : '';
                 srcHtml += speakerHtml + langHtml;
-                srcHtml += `<div class="seg-text">${this._esc(seg.original || '')}</div>`;
+                srcHtml += `<div class="seg-text">${this._esc(this._f(seg.original || ''))}</div>`;
                 tgtHtml += speakerHtml ? '<div class="speaker-label">&nbsp;</div>' : '';
-                tgtHtml += `<div class="seg-text${confidenceClass}">${this._esc(seg.translation)}</div>`;
+                tgtHtml += `<div class="seg-text${confidenceClass}">${this._esc(this._f(seg.translation))}</div>`;
             } else if (seg.status === 'original' && seg.original) {
                 srcHtml += speakerHtml + langHtml;
-                srcHtml += `<div class="seg-text pending">${this._esc(seg.original)}</div>`;
+                srcHtml += `<div class="seg-text pending">${this._esc(this._f(seg.original))}</div>`;
                 tgtHtml += speakerHtml ? '<div class="speaker-label">&nbsp;</div>' : '';
                 tgtHtml += `<div class="seg-text pending">...</div>`;
             }
@@ -510,8 +524,8 @@ export class TranscriptUI {
         // whisper lags behind translation, dumping target deltas into the source panel.
         if (this.sourceProvisionalText || this.provisionalText) {
             const usingOpenAi = this.provider === 'openai';
-            const srcText = usingOpenAi ? this.sourceProvisionalText : this.provisionalText;
-            const tgtText = usingOpenAi ? this.provisionalText : '';
+            const srcText = this._f(usingOpenAi ? this.sourceProvisionalText : this.provisionalText);
+            const tgtText = this._f(usingOpenAi ? this.provisionalText : '');
             if (srcText) srcHtml += `<div class="seg-text pending">${this._esc(srcText)}</div>`;
             tgtHtml += `<div class="seg-text pending">${tgtText ? this._esc(tgtText) : '...'}</div>`;
         }

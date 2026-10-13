@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Translator subtitles</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  #stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  .region { position: absolute; box-sizing: border-box; display: flex; overflow: hidden; }
+  .box { box-sizing: border-box; max-width: 100%; }
+  .box.empty { display: none; }
+  .text { display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
+  .inner { white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+  .t.dim { opacity: 0.6; }
+  .t.italic { font-style: italic; }
+  .guide { position: absolute; box-sizing: border-box; border: 2px dashed rgba(255, 0, 255, 0.85); color: #f0f; font: 24px sans-serif; padding: 6px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="overlay.js"></script>
+</body>
+</html>

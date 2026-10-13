@@ -18,6 +18,8 @@ import { Reader } from './reader.js';
 import { updater } from './updater.js';
 import { sessionStore } from './session-store.js';
 import { QWEN_LANGS } from './qwen-langs.js';
+import { EventConsole } from './event-console.js';
+import { DEFAULT_FILLERS, makeFillerFilter, parseFillerList } from './filler-filter.js';
 import {
     initShell, setActivity, getActivity, setLiveBadge, bindMenu, initWindowModes,
     startAutoHideWatch, stopAutoHideWatch, toggleManualCompact, isAutoHideEnabled, setAutoHideEnabled,
@@ -124,6 +126,19 @@ class App {
 
         // Show engine picker on first launch
         this._maybeShowEnginePicker();
+
+        // Live-event console (broadcast subtitles for vMix/OBS). Isolated so a
+        // failure here can never break the regular translator UI.
+        try {
+            this.eventConsole = new EventConsole({
+                root: document.getElementById('event-panel'),
+                toast: (m, t) => this._showToast(m, t),
+                isMainRunning: () => this.isRunning,
+            });
+            await this.eventConsole.init();
+        } catch (err) {
+            console.error('[EventConsole] init failed:', err);
+        }
 
         console.log('🌐 My Translator v0.7.1 initialized');
     }
@@ -315,6 +330,13 @@ class App {
         document.getElementById('select-audio-source')?.addEventListener('change', (e) => {
             this._setSource(e.target.value);
         });
+
+        // Microphone device picker: rescan on open so newly plugged-in
+        // devices (USB interface, wireless receiver) appear without restart.
+        const devSel = document.getElementById('select-audio-device');
+        devSel?.addEventListener('mousedown', () => this._refreshInputDevices());
+        devSel?.addEventListener('focus', () => this._refreshInputDevices());
+        devSel?.addEventListener('change', (e) => this._setInputDevice(e.target.value));
 
         // Clear button — clears display only (auto-save happens on stop)
         document.getElementById('btn-clear').addEventListener('click', async () => {
@@ -1008,7 +1030,34 @@ class App {
 
     // ─── Apply Settings ────────────────────────────────────
 
+    /** Caption options shared by the main window and the Event overlays. */
+    _captionSettings() {
+        const c = settingsManager.get().live?.captions || {};
+        return {
+            filter_fillers: c.filter_fillers !== false,
+            filler_words: Array.isArray(c.filler_words) ? c.filler_words : [...DEFAULT_FILLERS],
+        };
+    }
+
+    async _saveCaptionSettings(patch) {
+        const live = JSON.parse(JSON.stringify(settingsManager.get().live || {}));
+        live.captions = { ...(live.captions || {}), ...patch };
+        try {
+            await settingsManager.save({ live });
+        } catch (err) {
+            this._showToast(`Không lưu được cài đặt: ${err}`, 'error');
+        }
+    }
+
+    _applyFillerFilter() {
+        const c = this._captionSettings();
+        this.transcriptUI?.setTextFilter(c.filter_fillers ? makeFillerFilter(c.filler_words) : null);
+        const btn = document.getElementById('btn-filler-toggle');
+        if (btn) btn.textContent = `${c.filter_fillers ? '✓' : '　'} Lọc từ đệm (ừm, à, oh…)`;
+    }
+
     _applySettings(settings) {
+        this._applyFillerFilter();
         // Update overlay opacity
         const overlayView = document.getElementById('overlay-view');
         overlayView.style.opacity = settings.overlay_opacity || 0.85;
@@ -1041,6 +1090,7 @@ class App {
         // Update current source button states
         this.currentSource = settings.audio_source || 'system';
         this._updateSourceButtons();
+        this._refreshInputDevices();
 
         // TTS is always OFF on app start — user must toggle on each session
         this.ttsEnabled = false;
@@ -1587,6 +1637,20 @@ class App {
             setAutoHideEnabled(!isAutoHideEnabled());
             renderAutoHide();
         });
+        // Filler-word filter (shared with the Event overlays: settings.live.captions)
+        document.getElementById('btn-filler-toggle')?.addEventListener('click', () => {
+            const c = this._captionSettings();
+            this._saveCaptionSettings({ filter_fillers: !c.filter_fillers });
+        });
+        document.getElementById('btn-filler-edit')?.addEventListener('click', () => {
+            const c = this._captionSettings();
+            const cur = (c.filler_words || DEFAULT_FILLERS).join(', ');
+            const next = prompt('Từ đệm sẽ bị ẩn (mỗi từ cách nhau bằng dấu phẩy, chỉ từ đơn).\nĐể trống = dùng danh sách mặc định.', cur);
+            if (next == null) return;
+            const words = parseFillerList(next);
+            this._saveCaptionSettings({ filler_words: words.length ? words : [...DEFAULT_FILLERS], filter_fillers: true });
+            this._showToast(`Lọc ${words.length || DEFAULT_FILLERS.length} từ đệm`, 'success');
+        });
         document.getElementById('btn-read-play')?.addEventListener('click', () => {
             // Play doubles as Resume when paused — do NOT rebuild the reader.
             if (this._reader && this._reader.state === 'paused') this._reader.play();
@@ -1601,6 +1665,7 @@ class App {
     /** Side effects when the activity switcher changes space. Panel visibility
      *  itself is owned by ui-shell; this handles pause/drain/render concerns. */
     _onActivityChanged({ activity, previous }) {
+        this.eventConsole?.setVisible(activity === 'event');
         if (previous === 'read' && activity !== 'read') this._exitReadMode();
         if (activity === 'read') this._enterReadMode();
         if (activity === 'library') this._showSessions();
@@ -1854,6 +1919,55 @@ class App {
     _updateSourceButtons() {
         const sel = document.getElementById('select-audio-source');
         if (sel) sel.value = this.currentSource;
+        const dev = document.getElementById('select-audio-device');
+        if (dev) dev.style.display = this.currentSource === 'system' ? 'none' : '';
+    }
+
+    /** Selected microphone device name, or null for the system default. */
+    _captureDevice() {
+        if (this.currentSource === 'system') return null;
+        return settingsManager.get().input_device || null;
+    }
+
+    /** Fill the microphone picker from the backend device list. */
+    async _refreshInputDevices() {
+        const sel = document.getElementById('select-audio-device');
+        if (!sel) return;
+        let devices = [];
+        try {
+            devices = (await invoke('audio_list_input_devices')) || [];
+        } catch (err) {
+            console.warn('[App] list input devices failed:', err);
+        }
+        const current = settingsManager.get().input_device || '';
+        const opts = [['', '🎙 Mặc định hệ thống']];
+        for (const d of devices) {
+            opts.push([d.name, `${d.name}${d.is_default ? ' (mặc định)' : ''}`]);
+        }
+        if (current && !devices.some((d) => d.name === current)) {
+            opts.push([current, `${current} (chưa kết nối)`]);
+        }
+        const html = opts.map(([v, l]) => `<option value="${this._escAttr(v)}">${this._esc(l)}</option>`).join('');
+        if (html !== this._deviceOptionsHtml) {
+            this._deviceOptionsHtml = html;
+            sel.innerHTML = html;
+        }
+        sel.value = current;
+        sel.title = `Thiết bị micro: ${current || 'mặc định hệ thống'}`;
+    }
+
+    /** Change microphone device; restarts capture if a session is running. */
+    async _setInputDevice(name) {
+        await settingsManager.save({ input_device: name });
+        const label = name || 'mặc định hệ thống';
+        if (this.isRunning && this.currentSource !== 'system') {
+            await this.pause();
+            this._showToast(`Đổi micro: ${label}`, 'success');
+            await this.start();
+        } else {
+            this._showToast(`Micro: ${label}`, 'success');
+        }
+        this._refreshInputDevices();
     }
 
     // ─── Engine picker (Standard vs OpenAI) ──────────────────
@@ -2200,6 +2314,10 @@ class App {
     // ─── Start/Stop ────────────────────────────────────────
 
     async start() {
+        if (this.eventConsole?.provider) {
+            this._showToast('Live event subtitles are running (🎬 Event tab). Stop them first — they use the audio input.', 'error');
+            return;
+        }
         const settings = settingsManager.get();
         this.translationMode = settings.translation_mode || 'soniox';
         console.log('[App] start() called, translation_mode:', this.translationMode, 'settings:', JSON.stringify(settings));
@@ -2370,6 +2488,7 @@ class App {
             console.log('[OpenAI] Starting audio capture, source:', this.currentSource);
             await invoke('start_capture', {
                 source: this.currentSource,
+                device: this._captureDevice(),
                 channel,
             });
             console.log('[OpenAI] start_capture invoked OK');
@@ -2451,6 +2570,7 @@ class App {
             console.log('[Qwen] Starting audio capture, source:', this.currentSource);
             await invoke('start_capture', {
                 source: this.currentSource,
+                device: this._captureDevice(),
                 channel,
             });
             console.log('[Qwen] start_capture invoked OK');
@@ -2496,6 +2616,7 @@ class App {
             console.log('[App] Starting audio capture, source:', this.currentSource);
             await invoke('start_capture', {
                 source: this.currentSource,
+                device: this._captureDevice(),
                 channel: channel,
             });
             console.log('[App] Audio capture started successfully');
@@ -2515,6 +2636,7 @@ class App {
         try {
             await invoke('start_capture', {
                 source: this.currentSource,
+                device: this._captureDevice(),
                 channel: new window.__TAURI__.core.Channel(), // dummy channel for permission check
             });
             await invoke('stop_capture');
@@ -2604,6 +2726,7 @@ class App {
 
             await invoke('start_capture', {
                 source: this.currentSource,
+                device: this._captureDevice(),
                 channel: audioChannel,
             });
             console.log('[App] Audio capture started');
@@ -2884,6 +3007,7 @@ class App {
     // that finalizes the file), then best-effort engine teardown via pause().
     // Both are idempotent, so running this more than once is harmless.
     async _flushOnExit() {
+        try { this.eventConsole?.shutdown(); } catch (e) { console.error('[App] exit flush (event console) failed:', e); }
         try { await sessionStore.endSession(); } catch (e) { console.error('[App] exit flush (endSession) failed:', e); }
         try { await this.pause(); } catch (e) { console.error('[App] exit flush (pause) failed:', e); }
     }

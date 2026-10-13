@@ -47,6 +47,7 @@ export class SonioxClient {
         this.onStatusChange = null;   // (status) => {}
         this.onError = null;          // (error) => {}
         this.onConfidence = null;     // (avgConfidence) => {}
+        this.onTokens = null;         // (tokens) => {} raw token stream (optional)
     }
 
     /**
@@ -267,6 +268,13 @@ export class SonioxClient {
      */
     _handleResponse(data) {
         if (!data.tokens || data.tokens.length === 0) return;
+
+        // Raw token hook (live-event captions need per-token language, final
+        // and non-final translation tokens). Optional; existing callbacks below
+        // are unchanged.
+        if (this.onTokens) {
+            try { this.onTokens(data.tokens); } catch (e) { console.error('[Soniox] onTokens', e); }
+        }
 
         let originalText = '';
         let translationText = '';

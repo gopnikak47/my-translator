@@ -1,28 +1,13 @@
-use crate::audio::microphone::MicCapture;
-use crate::audio::SystemAudioCapture;
+use crate::audio::capture::AudioCapture;
+use crate::audio::microphone::{list_input_devices, AudioStatusView, InputDeviceInfo};
 use serde::Serialize;
-use std::sync::mpsc;
-use std::sync::Mutex;
-use tauri::{ipc::Channel, State};
+use std::sync::Arc;
+use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::State;
 
-/// State for tracking active audio captures
+/// State for audio capture (one shared capture, many consumers).
 pub struct AudioState {
-    pub system_audio: Mutex<SystemAudioCapture>,
-    pub microphone: Mutex<MicCapture>,
-    pub active_receiver: Mutex<Option<AudioForwarder>>,
-}
-
-/// Forwards audio from a receiver to a Tauri IPC channel
-pub struct AudioForwarder {
-    /// Handle to signal stop
-    stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl AudioForwarder {
-    fn stop(&self) {
-        self.stop_flag
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
+    pub capture: Arc<AudioCapture>,
 }
 
 #[derive(Serialize, Clone)]
@@ -31,132 +16,35 @@ pub struct PermissionStatus {
     pub microphone: String,
 }
 
-/// Start audio capture and forward data to the frontend via IPC channel
+/// Start audio capture and forward 16 kHz PCM16 to the frontend via an IPC
+/// channel. Audio arrives in JS as an `ArrayBuffer` every ~100 ms.
+/// `device` optionally selects an input device by name (microphone source).
 #[tauri::command]
 pub fn start_capture(
     source: String,
-    channel: Channel<Vec<u8>>,
+    device: Option<String>,
+    channel: Channel<InvokeResponseBody>,
     state: State<'_, AudioState>,
 ) -> Result<(), String> {
-    // Stop any existing capture first
-    stop_capture_inner(&state);
-
-    let receiver: mpsc::Receiver<Vec<u8>> = match source.as_str() {
-        "system" => {
-            let sys = state.system_audio.lock().map_err(|e| e.to_string())?;
-            sys.start()?
-        }
-        "microphone" => {
-            let mut mic = state.microphone.lock().map_err(|e| e.to_string())?;
-            mic.start()?
-        }
-        "both" => {
-            // Start both sources and merge into a single receiver
-            let sys = state.system_audio.lock().map_err(|e| e.to_string())?;
-            let sys_rx = sys.start()?;
-            let mut mic = state.microphone.lock().map_err(|e| e.to_string())?;
-            let mic_rx = mic.start()?;
-
-            let (merged_tx, merged_rx) = mpsc::channel::<Vec<u8>>();
-            let tx1 = merged_tx.clone();
-            let tx2 = merged_tx;
-
-            // Forward system audio to merged channel
-            std::thread::spawn(move || {
-                while let Ok(data) = sys_rx.recv() {
-                    if tx1.send(data).is_err() {
-                        break;
-                    }
-                }
-            });
-            // Forward mic audio to merged channel
-            std::thread::spawn(move || {
-                while let Ok(data) = mic_rx.recv() {
-                    if tx2.send(data).is_err() {
-                        break;
-                    }
-                }
-            });
-
-            merged_rx
-        }
-        _ => return Err(format!("Unknown source: {}", source)),
-    };
-
-    // Spawn a thread to forward audio data from receiver to IPC channel
-    let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let stop_flag_clone = stop_flag.clone();
-
-    std::thread::spawn(move || {
-        let mut buffer: Vec<u8> = Vec::with_capacity(32000); // ~1 sec at 16kHz s16le
-        let batch_interval = std::time::Duration::from_millis(200);
-        let mut last_flush = std::time::Instant::now();
-
-        loop {
-            if stop_flag_clone.load(std::sync::atomic::Ordering::SeqCst) {
-                // Flush remaining buffer before exit
-                if !buffer.is_empty() {
-                    let _ = channel.send(buffer.clone());
-                }
-                break;
-            }
-
-            match receiver.recv_timeout(std::time::Duration::from_millis(10)) {
-                Ok(data) => {
-                    buffer.extend_from_slice(&data);
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    if !buffer.is_empty() {
-                        let _ = channel.send(buffer.clone());
-                    }
-                    break;
-                }
-            }
-
-            // Flush buffer every 200ms
-            if last_flush.elapsed() >= batch_interval && !buffer.is_empty() {
-                if let Err(_e) = channel.send(buffer.clone()) {
-                    break; // Channel closed
-                }
-                buffer.clear();
-                last_flush = std::time::Instant::now();
-            }
-        }
-    });
-
-    // Store the forwarder so we can stop it later
-    let forwarder = AudioForwarder { stop_flag };
-    let mut active = state.active_receiver.lock().map_err(|e| e.to_string())?;
-    *active = Some(forwarder);
-
-    Ok(())
+    state.capture.attach_legacy(&source, device, channel)
 }
 
-/// Stop audio capture
+/// Stop the webview's audio stream (capture keeps running if live mode uses it).
 #[tauri::command]
 pub fn stop_capture(state: State<'_, AudioState>) -> Result<(), String> {
-    stop_capture_inner(&state);
+    state.capture.detach_legacy();
     Ok(())
 }
 
-fn stop_capture_inner(state: &AudioState) {
-    // Stop the forwarder
-    if let Ok(mut active) = state.active_receiver.lock() {
-        if let Some(forwarder) = active.take() {
-            forwarder.stop();
-        }
-    }
+#[tauri::command]
+pub fn audio_list_input_devices() -> Vec<InputDeviceInfo> {
+    list_input_devices()
+}
 
-    // Stop system audio
-    if let Ok(sys) = state.system_audio.lock() {
-        sys.stop();
-    }
-
-    // Stop microphone
-    if let Ok(mut mic) = state.microphone.lock() {
-        mic.stop();
-    }
+/// Level meter / health of the current capture (peak-hold resets on read).
+#[tauri::command]
+pub fn audio_status(state: State<'_, AudioState>) -> AudioStatusView {
+    state.capture.stats.view()
 }
 
 /// Check audio capture permissions

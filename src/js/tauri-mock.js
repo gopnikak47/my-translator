@@ -35,7 +35,22 @@ if (!window.__TAURI__ && location.port === '3111') {
         local_tts_speed: 1.0,
         local_tts_models_dir: '',
         font_size: 16,
+        // Live-event subtitles (mirrors live_core::LiveSettings::default()).
+        live: {"provider": "openai", "mode": "auto", "strategy": "dual_session", "default_spoken": "en", "input_device": "", "openai_chunk_ms": 200, "noise_reduction": "near_field", "captions": {"show_partials": true, "throttle_ms": 0, "hold_ms": 7000, "idle_commit_ms": 1200, "max_segment_chars": 140, "max_chars": 360, "final_mode": "rollup", "tentative_style": "dim", "echo_hold_ms": 900, "filter_fillers": true, "filler_words": ["ừm", "ờm", "ưm", "hừm", "ờ", "à", "um", "uhm", "uh", "er", "erm", "ah", "oh", "hmm"]}, "left": {"language": "opposite", "ref_width": 960, "ref_height": 1080, "font_family": "\"Segoe UI\", Arial, \"Noto Sans\", \"Roboto\", sans-serif", "font_size": 64, "font_weight": 700, "line_height": 1.25, "color": "#ffffff", "outline_color": "#000000", "outline_px": 3.0, "shadow": true, "backing": false, "backing_color": "#000000", "backing_opacity": 0.55, "margin_x": 48, "margin_y": 64, "valign": "bottom", "align": "center", "max_lines": 2}, "right": {"language": "opposite", "ref_width": 960, "ref_height": 1080, "font_family": "\"Segoe UI\", Arial, \"Noto Sans\", \"Roboto\", sans-serif", "font_size": 64, "font_weight": 700, "line_height": 1.25, "color": "#ffffff", "outline_color": "#000000", "outline_px": 3.0, "shadow": true, "backing": false, "backing_color": "#000000", "backing_opacity": 0.55, "margin_x": 48, "margin_y": 64, "valign": "bottom", "align": "center", "max_lines": 2}, "canvas": {"width": 3840, "height": 1080, "left": {"x": 0, "y": 0, "width": 960, "height": 1080}, "center": {"x": 960, "y": 0, "width": 1920, "height": 1080}, "right": {"x": 2880, "y": 0, "width": 960, "height": 1080}, "guides": false}, "server": {"port": 8765, "allow_lan": false, "access_token": "mock-token-0123456789", "auto_start": true}},
     };
+
+    // Live-event console sample status (browser dev only).
+    const mockLiveStatus = () => ({
+        provider: null,
+        uptime_s: 0,
+        engine: null,
+        router: { mode: 'auto', spoken: 'en', detected: 'en', override_lang: null, hidden: false, frozen: false, screen_langs: ['vi', 'vi'] },
+        audio: { state: 'running', error: null, device: 'Focusrite USB (Scarlett 2i2)', sample_rate: 48000, peak: 0.35 + Math.random() * 0.2, rms: 0.08 + Math.random() * 0.05, clipped_total: 0, clipping_recent: false, ms_since_audio: 12, frames_dropped: 0, device_reconnects: 0, silence_filled_ms: 0 },
+        metrics: { series: {}, counters: {}, overlay_clients: 2 },
+        server: { running: true, port: 8765, allow_lan: false, error: null, control_token: 'mock-token-0123456789',
+            urls: ['left', 'right', 'both', 'canvas'].map((s) => [s, `http://127.0.0.1:8765/overlay?screen=${s}`]) },
+        memory_mb: 142,
+    });
 
     // Sample local (Piper) voice catalog so the download/delete UI can be exercised.
     const mockLocalVoices = [
@@ -113,6 +128,22 @@ if (!window.__TAURI__ && location.port === '3111') {
                         return null;
                     case 'list_transcripts':
                         return [];
+                    case 'audio_list_input_devices':
+                        return [
+                            { name: 'Microphone (Realtek Audio)', is_default: true, channels: 2, sample_rate: 48000 },
+                            { name: 'Focusrite USB (Scarlett 2i2)', is_default: false, channels: 2, sample_rate: 48000 },
+                        ];
+                    case 'live_status':
+                        return mockLiveStatus();
+                    case 'live_start':
+                    case 'live_stop':
+                    case 'live_control':
+                    case 'live_soniox_ingest':
+                    case 'live_subscribe_segments':
+                    case 'live_server_restart':
+                    case 'live_server_stop':
+                    case 'live_reset_metrics':
+                        return null;
                     case 'check_update':
                         return null;
                     default:
@@ -138,6 +169,8 @@ if (!window.__TAURI__ && location.port === '3111') {
                 close: async () => { window.close(); },
                 minimize: async () => {},
                 toggleMaximize: async () => {},
+                onCloseRequested: async () => () => {},
+                listen: async () => () => {},
             }),
         },
     };

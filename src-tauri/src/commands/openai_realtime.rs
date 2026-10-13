@@ -135,12 +135,30 @@ pub async fn openai_realtime_start(
     Ok(session_id)
 }
 
+/// Audio arrives as a raw binary IPC body (`invoke(cmd, Uint8Array, { headers:
+/// { 'x-session-id': id } })`) — no JSON number-array encoding. The legacy JSON
+/// form `{ sessionId, pcm: [..] }` is still accepted.
 #[tauri::command]
 pub async fn openai_realtime_send_audio(
-    session_id: u64,
-    pcm: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
     state: State<'_, OpenAiState>,
 ) -> Result<(), String> {
+    let (session_id, pcm): (u64, Vec<u8>) = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => {
+            let id = request
+                .headers()
+                .get("x-session-id")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok())
+                .ok_or("missing x-session-id header")?;
+            (id, bytes.clone())
+        }
+        tauri::ipc::InvokeBody::Json(v) => {
+            let id = v.get("sessionId").and_then(|x| x.as_u64()).ok_or("missing sessionId")?;
+            let pcm = serde_json::from_value(v.get("pcm").cloned().unwrap_or_default()).map_err(|e| e.to_string())?;
+            (id, pcm)
+        }
+    };
     let sessions = state.sessions.lock().unwrap();
     let session = sessions
         .get(&session_id)

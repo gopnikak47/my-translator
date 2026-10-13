@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS = {
   source_language: 'auto',
   target_language: 'vi',
   audio_source: 'system',
+  input_device: '',  // microphone device name ('' = system default)
   overlay_opacity: 0.85,
   font_size: 16,
   max_lines: 5,

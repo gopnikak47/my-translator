@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles/main.css" />
+  <link rel="stylesheet" href="styles/event.css" />
 </head>
 
 <body>
@@ -33,6 +34,9 @@
           </button>
           <button class="activity-tab" data-activity="read" title="Đọc văn bản (TTS)" type="button">📖 Đọc</button>
           <button class="activity-tab" data-activity="library" title="Sessions đã lưu" type="button">📚 Thư viện</button>
+          <button class="activity-tab" data-activity="event" title="Live event subtitles for vMix / OBS (LED screens)" type="button">
+            🎬 Event<span id="event-tab-badge" class="live-tab-badge"></span>
+          </button>
         </div>
 
         <div class="toolbar-spacer" data-tauri-drag-region></div>
@@ -89,6 +93,9 @@
           <option value="system">🔊 System</option>
           <option value="microphone">🎤 Mic</option>
           <option value="both">🔊+🎤 Cả hai</option>
+        </select>
+        <select id="select-audio-device" class="source-select device-select" title="Thiết bị micro (input)" style="display:none">
+          <option value="">🎙 Mặc định hệ thống</option>
         </select>
       </div>
 
@@ -168,6 +175,8 @@
             <div class="more-menu-sep"></div>
             <button id="btn-compact" class="more-menu-item" type="button">⤢ Compact — ẩn thanh công cụ</button>
             <button id="btn-auto-hide" class="more-menu-item" type="button">✓ Tự ẩn khi đang dịch</button>
+            <button id="btn-filler-toggle" class="more-menu-item" type="button" title="Ẩn từ đệm khỏi phụ đề (cả màn hình LED)">✓ Lọc từ đệm (ừm, à, oh…)</button>
+            <button id="btn-filler-edit" class="more-menu-item" type="button">✎ Sửa danh sách từ đệm…</button>
             <button id="btn-shortcuts" class="more-menu-item" type="button">⌨️ Phím tắt</button>
           </div>
         </div>
@@ -278,6 +287,9 @@
         <div id="session-viewer-content" class="session-content-scroll"></div>
       </div>
     </div>
+
+    <!-- Event activity panel — live-event broadcast subtitles (vMix / OBS overlays) -->
+    <div id="event-panel" class="activity-panel" data-activity="event"></div>
 
     <!-- Resize Handle -->
     <div id="resize-handle"></div>

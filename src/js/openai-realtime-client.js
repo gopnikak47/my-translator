@@ -3,6 +3,14 @@
 
 const { invoke, Channel } = window.__TAURI__.core;
 
+/** Index just past the last sentence terminator that is followed by whitespace (0 = none). */
+export function lastSentenceEnd(text) {
+    const re = /[.!?…。]["'”’)]*\s/g;
+    let m, end = 0;
+    while ((m = re.exec(text)) !== null) end = m.index + m[0].length;
+    return end;
+}
+
 export class OpenAiRealtimeClient {
     constructor() {
         this.sessionId = null;
@@ -59,11 +67,10 @@ export class OpenAiRealtimeClient {
 
     async sendAudio(arrayBuffer) {
         if (!this.isConnected || this.sessionId == null) return;
-        const bytes = Array.from(new Uint8Array(arrayBuffer));
         try {
-            await invoke('openai_realtime_send_audio', {
-                sessionId: this.sessionId,
-                pcm: bytes,
+            // Raw binary IPC body (no JSON number array).
+            await invoke('openai_realtime_send_audio', new Uint8Array(arrayBuffer), {
+                headers: { 'x-session-id': String(this.sessionId) },
             });
         } catch (err) {
             console.warn('[OpenAI Realtime] send audio failed:', err);
@@ -119,6 +126,17 @@ export class OpenAiRealtimeClient {
                     this.onSegment(sourceText, evt.text);
                 } else {
                     this._provisionalBuffer += evt.text;
+                    // The translation API streams append-only deltas and has no
+                    // "done" event, so finalize completed sentences here
+                    // (terminator followed by whitespace) to keep segments short.
+                    const cut = lastSentenceEnd(this._provisionalBuffer);
+                    if (cut > 0) {
+                        const done = this._provisionalBuffer.slice(0, cut).trim();
+                        this._provisionalBuffer = this._provisionalBuffer.slice(cut).replace(/^\s+/, '');
+                        const sourceText = this._pendingSourceFinals.shift() || this._sourceBuffer;
+                        this._sourceBuffer = '';
+                        if (done) this.onSegment(sourceText, done);
+                    }
                     this.onProvisional(this._provisionalBuffer);
                 }
                 break;
