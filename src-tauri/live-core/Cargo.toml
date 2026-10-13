@@ -1,0 +1,25 @@
+[package]
+name = "live-core"
+version = "0.1.0"
+edition = "2021"
+description = "Live-event subtitle core: caption engine, EN/VI routing, OpenAI realtime translation sessions and the local broadcast overlay server. No Tauri dependency so it can be unit-tested headless."
+publish = false
+
+[lib]
+name = "live_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Versions match the ones already resolved by the main app so no duplicate crates are pulled in.
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "net", "io-util"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+rubato = "0.16"
+rand = "0.8"
+
+[dev-dependencies]
+http = "1"
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }

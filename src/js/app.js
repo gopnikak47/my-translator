@@ -18,6 +18,7 @@ import { Reader } from './reader.js';
 import { updater } from './updater.js';
 import { sessionStore } from './session-store.js';
 import { QWEN_LANGS } from './qwen-langs.js';
+import { EventConsole } from './event-console.js';
 import {
     initShell, setActivity, getActivity, setLiveBadge, bindMenu, initWindowModes,
     startAutoHideWatch, stopAutoHideWatch, toggleManualCompact, isAutoHideEnabled, setAutoHideEnabled,
@@ -124,6 +125,19 @@ class App {
 
         // Show engine picker on first launch
         this._maybeShowEnginePicker();
+
+        // Live-event console (broadcast subtitles for vMix/OBS). Isolated so a
+        // failure here can never break the regular translator UI.
+        try {
+            this.eventConsole = new EventConsole({
+                root: document.getElementById('event-panel'),
+                toast: (m, t) => this._showToast(m, t),
+                isMainRunning: () => this.isRunning,
+            });
+            await this.eventConsole.init();
+        } catch (err) {
+            console.error('[EventConsole] init failed:', err);
+        }
 
         console.log('🌐 My Translator v0.7.1 initialized');
     }
@@ -1601,6 +1615,7 @@ class App {
     /** Side effects when the activity switcher changes space. Panel visibility
      *  itself is owned by ui-shell; this handles pause/drain/render concerns. */
     _onActivityChanged({ activity, previous }) {
+        this.eventConsole?.setVisible(activity === 'event');
         if (previous === 'read' && activity !== 'read') this._exitReadMode();
         if (activity === 'read') this._enterReadMode();
         if (activity === 'library') this._showSessions();
@@ -2200,6 +2215,10 @@ class App {
     // ─── Start/Stop ────────────────────────────────────────
 
     async start() {
+        if (this.eventConsole?.provider) {
+            this._showToast('Live event subtitles are running (🎬 Event tab). Stop them first — they use the audio input.', 'error');
+            return;
+        }
         const settings = settingsManager.get();
         this.translationMode = settings.translation_mode || 'soniox';
         console.log('[App] start() called, translation_mode:', this.translationMode, 'settings:', JSON.stringify(settings));
@@ -2884,6 +2903,7 @@ class App {
     // that finalizes the file), then best-effort engine teardown via pause().
     // Both are idempotent, so running this more than once is harmless.
     async _flushOnExit() {
+        try { this.eventConsole?.shutdown(); } catch (e) { console.error('[App] exit flush (event console) failed:', e); }
         try { await sessionStore.endSession(); } catch (e) { console.error('[App] exit flush (endSession) failed:', e); }
         try { await this.pause(); } catch (e) { console.error('[App] exit flush (pause) failed:', e); }
     }

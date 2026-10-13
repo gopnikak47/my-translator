@@ -1,17 +1,18 @@
 mod audio;
 mod commands;
 mod settings;
+mod sysinfo;
 
-use audio::microphone::MicCapture;
-use audio::SystemAudioCapture;
+use audio::capture::AudioCapture;
 use commands::audio::AudioState;
+use commands::live::LiveState;
 use commands::local_pipeline::LocalPipelineState;
 use commands::local_tts::LocalTtsState;
 use commands::openai_realtime::OpenAiState;
 use commands::qwen_realtime::QwenState;
 use settings::{Settings, SettingsState};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 // Set once the frontend has flushed the session (or the exit deadline elapsed),
 // so the ExitRequested handler stops preventing exit and the app can quit.
@@ -55,25 +56,48 @@ fn is_apple_silicon_hardware() -> bool {
 // Called by the frontend after it has flushed the session on exit. Force-exits
 // the process; the flag keeps a subsequent ExitRequested from being prevented.
 #[tauri::command]
-fn exit_app(app: tauri::AppHandle) {
+async fn exit_app(app: tauri::AppHandle, live: tauri::State<'_, LiveState>) -> Result<(), ()> {
+    // Close translation sessions gracefully (no orphaned billing sessions) and
+    // release the overlay port before exiting.
+    let inner = live.0.clone();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), inner.shutdown()).await;
     EXIT_ALLOWED.store(true, Ordering::SeqCst);
     app.exit(0);
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Load settings from disk (or defaults)
     let initial_settings = Settings::load();
+    let live_settings = initial_settings.live.clone().sanitized();
+    let metrics = Arc::new(live_core::Metrics::new());
+    let capture = Arc::new(AudioCapture::new(metrics.clone()));
+    let live_state = LiveState::new(&live_settings, metrics, capture.clone());
+    let live_for_setup = live_state.clone();
+    let live_for_exit = live_state.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(desktop)]
             {
                 app.handle()
                     .plugin(tauri_plugin_updater::Builder::new().build())?;
                 app.handle().plugin(tauri_plugin_process::init())?;
+            }
+            // Live captions: housekeeping ticker + overlay server for vMix/OBS.
+            {
+                let inner = live_for_setup.0.clone();
+                tauri::async_runtime::spawn(live_core::CaptionHub::run_ticker(Arc::downgrade(&inner.hub)));
+                if live_settings.server.auto_start {
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = inner.ensure_server(&live_settings).await {
+                            eprintln!("[live] overlay server not started: {e}");
+                        }
+                    });
+                }
             }
             // Dev builds (compiled with the `devtools` feature): auto-open the WebView
             // inspector so JS/console errors are visible. Never compiled into release.
@@ -87,11 +111,8 @@ pub fn run() {
             Ok(())
         })
         .manage(SettingsState(Mutex::new(initial_settings)))
-        .manage(AudioState {
-            system_audio: Mutex::new(SystemAudioCapture::new()),
-            microphone: Mutex::new(MicCapture::new()),
-            active_receiver: Mutex::new(None),
-        })
+        .manage(AudioState { capture })
+        .manage(live_state)
         .manage(LocalPipelineState {
             process: Mutex::new(None),
         })
@@ -104,6 +125,17 @@ pub fn run() {
             commands::audio::start_capture,
             commands::audio::stop_capture,
             commands::audio::check_permissions,
+            commands::audio::audio_list_input_devices,
+            commands::audio::audio_status,
+            commands::live::live_start,
+            commands::live::live_stop,
+            commands::live::live_control,
+            commands::live::live_soniox_ingest,
+            commands::live::live_subscribe_segments,
+            commands::live::live_status,
+            commands::live::live_server_restart,
+            commands::live::live_server_stop,
+            commands::live::live_reset_metrics,
             commands::transcript::save_transcript,
             commands::transcript::open_transcript_dir,
             commands::transcript::list_transcripts,
@@ -142,7 +174,11 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(move |app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Last chance: stop device capture threads deterministically.
+                live_for_exit.0.capture.stop_all();
+            }
             // Cmd+Q and Dock → Quit fire app-level ExitRequested (not the
             // window's onCloseRequested). Prevent the first exit, ask the
             // frontend to flush the session, and force-exit after a deadline so

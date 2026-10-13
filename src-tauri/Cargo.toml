@@ -5,6 +5,11 @@ description = "Personal Real-time Speech Translator"
 authors = ["phucnt"]
 edition = "2021"
 
+[workspace]
+# live-core: Tauri-free live-event subtitle core, unit-tested headless
+# (`cargo test -p live-core`).
+members = ["live-core"]
+
 [lib]
 name = "my_translator_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -42,6 +47,8 @@ tauri-plugin-dialog = "2"
 # Model archive extraction (.tar.bz2) for downloaded Piper voices.
 tar = "0.4"
 bzip2 = "0.4"
+# Live-event subtitle core (caption engine, OpenAI translation sessions, overlay server).
+live-core = { path = "live-core" }
 
 # macOS: ScreenCaptureKit for system audio
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -54,6 +61,8 @@ windows = { version = "0.58", features = [
   "Win32_Media_Audio",
   "Win32_System_Com",
   "Win32_Foundation",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
 ] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]

@@ -102,6 +102,9 @@ pub struct Settings {
     /// Default false — speaker → mic feedback loop on shared devices.
     #[serde(default)]
     pub openai_audio_output: bool,
+    /// Live-event broadcast subtitles (OpenAI/Soniox → vMix/OBS overlays).
+    #[serde(default)]
+    pub live: live_core::LiveSettings,
 }
 
 impl Default for Settings {
@@ -142,6 +145,7 @@ impl Default for Settings {
             local_tts_speed: 1.0,
             local_tts_models_dir: String::new(),
             openai_audio_output: false,
+            live: live_core::LiveSettings::default(),
         }
     }
 }
@@ -164,14 +168,20 @@ impl Settings {
     /// Load settings from disk, or return defaults
     pub fn load() -> Self {
         let path = settings_path();
-        if path.exists() {
+        let mut s: Self = if path.exists() {
             match fs::read_to_string(&path) {
                 Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
                 Err(_) => Self::default(),
             }
         } else {
             Self::default()
+        };
+        // Overlay control API token: generated once, stored locally.
+        if s.live.server.access_token.len() < 16 {
+            s.live.server.access_token = random_token();
+            let _ = s.save();
         }
+        s
     }
 
     /// Save settings to disk
@@ -187,11 +197,47 @@ impl Settings {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize: {}", e))?;
 
-        fs::write(&path, json).map_err(|e| format!("Failed to write settings: {}", e))?;
+        // Write-then-rename so a crash or power loss mid-write (long live
+        // events) can never leave a truncated settings file behind.
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, json).map_err(|e| format!("Failed to write settings: {}", e))?;
+        fs::rename(&tmp, &path).map_err(|e| format!("Failed to replace settings: {}", e))?;
 
         Ok(())
     }
 }
 
+fn random_token() -> String {
+    use rand::Rng;
+    let bytes: [u8; 12] = rand::thread_rng().gen();
+    hex::encode(bytes)
+}
+
 /// Thread-safe settings state managed by Tauri
 pub struct SettingsState(pub Mutex<Settings>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_from_older_versions_still_load() {
+        // A v0.9.1 settings file: no `live` block, no newer optional fields.
+        let old = r#"{
+            "soniox_api_key": "sk-soniox",
+            "openai_api_key": "sk-openai",
+            "source_language": "auto",
+            "target_language": "vi",
+            "audio_source": "microphone",
+            "translation_mode": "openai",
+            "tts_provider": "edge"
+        }"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.openai_api_key, "sk-openai");
+        assert_eq!(s.translation_mode, "openai");
+        assert_eq!(s.live, live_core::LiveSettings::default());
+        // And it round-trips with the new block.
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.live, s.live);
+    }
+}

@@ -7,6 +7,23 @@ Format: `## v<version> - <YYYY-MM-DD>` followed by content until the next `## v`
 
 ---
 
+## Unreleased — live-event subtitles (branch `claude/eager-bell-tmflsa`)
+
+### Added
+- **🎬 Event tab**: bilingual EN ↔ VI broadcast subtitles for vMix / OBS — OpenAI Realtime (`gpt-realtime-translate`) with automatic language switching (two prewarmed sessions or one switching session), EN→VI and VI→EN one-way modes, Soniox manual fallback.
+- **Local overlay server** (`http://127.0.0.1:8765/overlay?screen=left|right|both|canvas`): transparent, SSE push, auto-reconnect, display mode A (opposite of speaker) / B (fixed language per screen), per-screen styling, single-HDMI canvas regions, emergency hide/freeze/clear (buttons, hotkeys, token-protected HTTP control API).
+- Audio input device selection (USB interfaces), level meter, clipping/disconnect alerts, automatic device reopen, silence bridging.
+- Performance & health panel: per-stage latency (median / P95 / worst), reconnects, session rotations, memory.
+
+### Changed
+- One shared audio capture fanned out to all consumers; band-limited resampling from the device rate; webview engines receive raw binary audio every 100 ms (was a JSON number array every 200 ms).
+- OpenAI desktop mode: audio sent as raw binary IPC; captions finalise per sentence (the translation API has no `*.done` events).
+- Settings are written atomically.
+
+See `docs/live-event/`.
+
+---
+
 ## v0.9.1 - 2026-07-11
 
 ### Fixed — engine picker no longer traps users

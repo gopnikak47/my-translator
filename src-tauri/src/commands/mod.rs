@@ -2,6 +2,7 @@ pub mod audio;
 pub mod edge_tts;
 pub mod google_free_tts;
 pub mod http_client;
+pub mod live;
 pub mod local_pipeline;
 pub mod local_tts;
 pub mod microsoft_tts;

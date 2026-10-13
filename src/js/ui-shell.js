@@ -1,14 +1,14 @@
 /**
  * UI Shell — activity-first navigation for the main overlay window.
  *
- * Owns WHICH activity panel (live | read | library) is visible and the
+ * Owns WHICH activity panel (live | read | library | event) is visible and the
  * top-bar switcher state. Side effects of entering/leaving an activity
  * (pausing the live session, draining TTS, rendering the session list)
  * stay in app.js, which listens for the `activity-changed` CustomEvent
  * dispatched from here.
  */
 
-const ACTIVITIES = ['live', 'read', 'library'];
+const ACTIVITIES = ['live', 'read', 'library', 'event'];
 
 let currentActivity = 'live';
 

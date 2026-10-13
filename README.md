@@ -130,6 +130,17 @@ Alibaba DashScope `qwen3-livetranslate-flash-realtime` — streams **translated 
 
 Source language must be picked explicitly (auto-detect is disabled on this engine — Live Flash stalls on real mic input when source is "auto"). Two-way mode and the custom TTS toggle are also disabled while Qwen is selected.
 
+### 🎬 Live Event Subtitles (vMix / OBS, LED screens)
+
+Bilingual **English ↔ Vietnamese** subtitles for stage events: pick the USB audio
+interface, choose OpenAI Realtime (Soniox as one-click fallback), and add the
+transparent overlay URLs (`http://127.0.0.1:8765/overlay?screen=left|right|both|canvas`)
+as vMix Web Browser inputs or OBS Browser Sources. Automatic language switching,
+fixed-language-per-screen mode, per-screen styling, single-HDMI canvas mapping,
+emergency hide/freeze/clear, latency & health panel.
+
+> 📖 [Event setup guide](docs/live-event/EVENT_SETUP.md) · [Architecture & notes](docs/live-event/README.md) · [Build & tests](docs/live-event/BUILD_AND_TEST.md)
+
 ### 🖥️ Local Mode (Apple Silicon only)
 
 Experimental offline mode using MLX + Whisper + Gemma — runs 100% on-device. JA/EN/ZH/KO → VI/EN.
