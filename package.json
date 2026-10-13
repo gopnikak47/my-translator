@@ -13,7 +13,8 @@
     "lint": "cd src-tauri && cargo clippy",
     "format": "cd src-tauri && cargo fmt",
     "test": "node --test tests/js/*.test.js",
-    "test:rust": "cd src-tauri && cargo test -p live-core"
+    "test:rust": "cd src-tauri && cargo test -p live-core",
+    "build:local": "tauri build --config src-tauri/tauri.nosign.conf.json"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

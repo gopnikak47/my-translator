@@ -15,7 +15,9 @@ cd src-tauri
 cargo test -p live-core       # caption engine, OpenAI mock-server and overlay tests
 cargo test --lib              # app crate tests
 cd ..
-npm run tauri build           # → src-tauri/target/release/bundle/nsis/*-setup.exe
+npm run build:local           # → src-tauri/target/release/bundle/nsis/*-setup.exe
+# (`npm run tauri build` also signs auto-update packages and therefore needs the
+#  original author's TAURI_SIGNING_PRIVATE_KEY; `build:local` skips that step.)
 ```
 
 No new third-party crates or npm packages were added; `live-core` is a local
