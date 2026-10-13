@@ -13,6 +13,8 @@ const DEFAULT_SETTINGS = {
   target_language: 'vi',
   audio_source: 'system',
   input_device: '',  // microphone device name ('' = system default)
+  input_gain_db: 0,  // software input gain (dB)
+  input_channel_mode: 'auto',  // auto | mix | left | right
   overlay_opacity: 0.85,
   font_size: 16,
   max_lines: 5,

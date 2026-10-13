@@ -101,6 +101,22 @@
         <span id="mic-meter" class="mic-meter" title="Mức âm thanh đầu vào" style="display:none"><span id="mic-meter-fill"></span></span>
         <span id="mic-meter-label" class="mic-meter-label" style="display:none">—</span>
       </div>
+      <!-- Mic test tools (visible while the 🎚 meter is on) -->
+      <div id="mic-tools" class="mic-tools" style="display:none">
+        <label>Kênh
+          <select id="mic-channel" class="source-select" title="Cách lấy tiếng từ micro nhiều kênh">
+            <option value="auto">Tự động (kênh to hơn)</option>
+            <option value="mix">Trộn 2 kênh</option>
+            <option value="left">Chỉ kênh trái</option>
+            <option value="right">Chỉ kênh phải</option>
+          </select>
+        </label>
+        <label>Gain
+          <input id="mic-gain" type="range" min="0" max="30" step="1" value="0" title="Khuếch đại phần mềm (0 = giữ nguyên)" />
+          <span id="mic-gain-val">+0 dB</span>
+        </label>
+        <span id="mic-diag" class="mic-diag"></span>
+      </div>
 
       <div id="transcript-content" data-tauri-drag-region>
         <div class="transcript-placeholder">

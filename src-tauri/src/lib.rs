@@ -73,6 +73,10 @@ pub fn run() {
     let live_settings = initial_settings.live.clone().sanitized();
     let metrics = Arc::new(live_core::Metrics::new());
     let capture = Arc::new(AudioCapture::new(metrics.clone()));
+    capture.stats.set_input_options(
+        initial_settings.input_gain_db,
+        live_core::audio::ChannelMode::from_code(&initial_settings.input_channel_mode),
+    );
     let live_state = LiveState::new(&live_settings, metrics, capture.clone());
     let live_for_setup = live_state.clone();
     let live_for_exit = live_state.clone();
@@ -127,6 +131,7 @@ pub fn run() {
             commands::audio::check_permissions,
             commands::audio::audio_list_input_devices,
             commands::audio::audio_status,
+            commands::audio::audio_set_input_options,
             commands::live::live_start,
             commands::live::live_stop,
             commands::live::live_control,

@@ -112,6 +112,139 @@ pub fn f32_to_i16(s: f32) -> i16 {
     (s.clamp(-1.0, 1.0) * 32767.0) as i16
 }
 
+/// How a multi-channel input is reduced to mono.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelMode {
+    /// Follow the louder channel (with hysteresis). Robust for receivers that
+    /// put the voice on one channel only, or whose channels partly cancel.
+    Auto,
+    /// Average all channels (classic downmix).
+    Mix,
+    Left,
+    Right,
+}
+
+impl ChannelMode {
+    pub fn from_code(code: &str) -> Self {
+        match code {
+            "mix" => ChannelMode::Mix,
+            "left" => ChannelMode::Left,
+            "right" => ChannelMode::Right,
+            _ => ChannelMode::Auto,
+        }
+    }
+    pub fn as_u8(self) -> u8 {
+        match self {
+            ChannelMode::Auto => 0,
+            ChannelMode::Mix => 1,
+            ChannelMode::Left => 2,
+            ChannelMode::Right => 3,
+        }
+    }
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => ChannelMode::Mix,
+            2 => ChannelMode::Left,
+            3 => ChannelMode::Right,
+            _ => ChannelMode::Auto,
+        }
+    }
+}
+
+/// Stateful interleaved → mono reducer.
+#[derive(Debug, Default)]
+pub struct ChannelPicker {
+    smoothed: Vec<f32>,
+    current: usize,
+}
+
+impl ChannelPicker {
+    /// Reduce interleaved `data` to mono into `out`, applying `gain`.
+    /// Returns the per-channel peaks of the block (before gain).
+    pub fn process(&mut self, data: &[f32], channels: usize, mode: ChannelMode, gain: f32, out: &mut Vec<f32>) -> Vec<f32> {
+        let ch = channels.max(1);
+        let frames = data.len() / ch;
+        let mut peaks = vec![0f32; ch];
+        let mut power = vec![0f32; ch];
+        for f in data.chunks_exact(ch) {
+            for (c, &v) in f.iter().enumerate() {
+                let a = v.abs();
+                if a > peaks[c] {
+                    peaks[c] = a;
+                }
+                power[c] += v * v;
+            }
+        }
+        if ch == 1 {
+            out.extend(data.iter().map(|v| v * gain));
+            return peaks;
+        }
+        if self.smoothed.len() != ch {
+            self.smoothed = vec![0.0; ch];
+            self.current = 0;
+        }
+        let n = frames.max(1) as f32;
+        for (sm, p) in self.smoothed.iter_mut().zip(&power) {
+            *sm = 0.85 * *sm + 0.15 * (p / n);
+        }
+        let pick = match mode {
+            ChannelMode::Mix => None,
+            ChannelMode::Left => Some(0),
+            ChannelMode::Right => Some(1.min(ch - 1)),
+            ChannelMode::Auto => {
+                let best = (0..ch).max_by(|&a, &b| self.smoothed[a].total_cmp(&self.smoothed[b])).unwrap_or(0);
+                // Switch only when the other channel is clearly louder (≥3 dB).
+                if best != self.current && self.smoothed[best] > 2.0 * self.smoothed[self.current] {
+                    self.current = best;
+                }
+                Some(self.current)
+            }
+        };
+        match pick {
+            Some(c) => out.extend(data.chunks_exact(ch).map(|f| f[c] * gain)),
+            None => {
+                let k = gain / ch as f32;
+                out.extend(data.chunks_exact(ch).map(|f| f.iter().sum::<f32>() * k));
+            }
+        }
+        peaks
+    }
+}
+
+/// Converts 32-bit integer PCM to f32, detecting drivers that deliver 24-bit
+/// samples right-aligned in the 32-bit container (would otherwise read 48 dB
+/// too quiet). Self-correcting: any value outside the 24-bit range switches
+/// back to standard left-aligned scaling.
+#[derive(Debug, Default)]
+pub struct I32Decoder {
+    pub right_aligned: bool,
+    evidence_blocks: u32,
+}
+
+impl I32Decoder {
+    pub fn decode(&mut self, data: &[i32], out: &mut Vec<f32>) {
+        let mut max_abs: u32 = 0;
+        let mut low_bits = false;
+        for &s in data {
+            max_abs = max_abs.max(s.unsigned_abs());
+            low_bits |= s & 0xFF != 0;
+        }
+        if max_abs >= 1 << 23 {
+            self.right_aligned = false;
+            self.evidence_blocks = 0;
+        } else if low_bits && max_abs >= 1 << 12 {
+            // Values confined to 24 bits with populated low bits, and clearly
+            // above silence: typical of right-aligned 24-bit data.
+            self.evidence_blocks += 1;
+            if self.evidence_blocks >= 20 {
+                self.right_aligned = true;
+            }
+        }
+        let scale = if self.right_aligned { 1.0 / 8_388_608.0 } else { 1.0 / 2_147_483_648.0 };
+        out.extend(data.iter().map(|&s| (s as f32 * scale).clamp(-1.0, 1.0)));
+    }
+}
+
 /// Peak / RMS / clipped-sample statistics of a block.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Level {
@@ -342,6 +475,68 @@ mod tests {
         let l = measure(&[1.0, -1.0, 0.0, 0.0]);
         assert_eq!(l.clipped, 2);
         assert_eq!(l.peak, 1.0);
+    }
+
+    #[test]
+    fn auto_channel_follows_the_voice_channel() {
+        let mut p = ChannelPicker::default();
+        // Voice on the right channel only, left silent.
+        let block: Vec<f32> = (0..480).flat_map(|i| [0.0, ((i as f32) * 0.1).sin() * 0.5]).collect();
+        let mut out = Vec::new();
+        for _ in 0..10 {
+            out.clear();
+            p.process(&block, 2, ChannelMode::Auto, 1.0, &mut out);
+        }
+        assert!(measure(&out).peak > 0.45, "auto must not halve a one-sided signal");
+        out.clear();
+        p.process(&block, 2, ChannelMode::Mix, 1.0, &mut out);
+        assert!(measure(&out).peak < 0.26);
+    }
+
+    #[test]
+    fn auto_channel_avoids_phase_cancellation_and_applies_gain() {
+        let mut p = ChannelPicker::default();
+        let block: Vec<f32> = (0..480).flat_map(|i| { let v = ((i as f32) * 0.1).sin() * 0.1; [v, -v] }).collect();
+        let mut out = Vec::new();
+        let peaks = p.process(&block, 2, ChannelMode::Auto, 4.0, &mut out);
+        assert!((peaks[0] - 0.1).abs() < 0.01 && (peaks[1] - 0.1).abs() < 0.01);
+        assert!(measure(&out).peak > 0.35, "gain ×4 on one channel, no cancellation");
+        out.clear();
+        p.process(&block, 2, ChannelMode::Mix, 1.0, &mut out);
+        assert!(measure(&out).peak < 1e-6, "mix cancels out-of-phase channels");
+    }
+
+    #[test]
+    fn i32_decoder_detects_right_aligned_24_bit() {
+        let mut d = I32Decoder::default();
+        // -10 dBFS tone as right-aligned 24-bit (max ≈ 0.32 · 2^23).
+        let block: Vec<i32> = (0..480).map(|i| (((i as f32) * 0.05).sin() * 0.32 * 8_388_607.0) as i32 | 1).collect();
+        let mut out = Vec::new();
+        for _ in 0..25 {
+            out.clear();
+            d.decode(&block, &mut out);
+        }
+        assert!(d.right_aligned);
+        assert!(measure(&out).peak > 0.3);
+        // Standard left-aligned data (loud) switches back immediately.
+        let loud: Vec<i32> = block.iter().map(|&v| v.wrapping_shl(8)).collect();
+        out.clear();
+        d.decode(&loud, &mut out);
+        assert!(!d.right_aligned);
+        assert!(measure(&out).peak > 0.3);
+    }
+
+    #[test]
+    fn i32_decoder_keeps_left_aligned_24_in_32() {
+        let mut d = I32Decoder::default();
+        // Proper left-aligned 24-in-32: low byte always zero, even when quiet.
+        let quiet: Vec<i32> = (0..480).map(|i| ((((i as f32) * 0.05).sin() * 0.001 * 8_388_607.0) as i32) << 8).collect();
+        let mut out = Vec::new();
+        for _ in 0..50 {
+            out.clear();
+            d.decode(&quiet, &mut out);
+        }
+        assert!(!d.right_aligned);
     }
 
     #[test]

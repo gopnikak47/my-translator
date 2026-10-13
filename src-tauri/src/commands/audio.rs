@@ -47,6 +47,16 @@ pub fn audio_status(state: State<'_, AudioState>) -> AudioStatusView {
     state.capture.stats.view()
 }
 
+/// Software input gain (dB, 0..+40) and channel mode ("auto" | "mix" |
+/// "left" | "right"). Applies immediately to the running capture.
+#[tauri::command]
+pub fn audio_set_input_options(gain_db: f32, channel_mode: String, state: State<'_, AudioState>) {
+    state
+        .capture
+        .stats
+        .set_input_options(gain_db, live_core::audio::ChannelMode::from_code(&channel_mode));
+}
+
 /// Check audio capture permissions
 #[tauri::command]
 pub fn check_permissions() -> PermissionStatus {

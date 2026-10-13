@@ -45,7 +45,7 @@ if (!window.__TAURI__ && location.port === '3111') {
         uptime_s: 0,
         engine: null,
         router: { mode: 'auto', spoken: 'en', detected: 'en', override_lang: null, hidden: false, frozen: false, screen_langs: ['vi', 'vi'] },
-        audio: { state: 'running', error: null, device: 'Focusrite USB (Scarlett 2i2)', sample_rate: 48000, peak: 0.35 + Math.random() * 0.2, rms: 0.08 + Math.random() * 0.05, clipped_total: 0, clipping_recent: false, ms_since_audio: 12, frames_dropped: 0, device_reconnects: 0, silence_filled_ms: 0 },
+        audio: { state: 'running', error: null, device: 'Focusrite USB (Scarlett 2i2)', sample_rate: 48000, peak: 0.35 + Math.random() * 0.2, rms: 0.08 + Math.random() * 0.05, clipped_total: 0, clipping_recent: false, ms_since_audio: 12, frames_dropped: 0, device_reconnects: 0, silence_filled_ms: 0, stream_errors: 0, sample_format: 'F32', channels: 2, peak_left: 0.3 + Math.random() * 0.1, peak_right: 0.0008, gain_db: 0, channel_mode: 'auto', i32_right_aligned: false },
         metrics: { series: {}, counters: {}, overlay_clients: 2 },
         server: { running: true, port: 8765, allow_lan: false, error: null, control_token: 'mock-token-0123456789',
             urls: ['left', 'right', 'both', 'canvas'].map((s) => [s, `http://127.0.0.1:8765/overlay?screen=${s}`]) },
@@ -133,6 +133,8 @@ if (!window.__TAURI__ && location.port === '3111') {
                             { name: 'Microphone (Realtek Audio)', is_default: true, channels: 2, sample_rate: 48000 },
                             { name: 'Focusrite USB (Scarlett 2i2)', is_default: false, channels: 2, sample_rate: 48000 },
                         ];
+                    case 'audio_set_input_options':
+                        return null;
                     case 'audio_status':
                         return mockLiveStatus().audio;
                     case 'live_status':

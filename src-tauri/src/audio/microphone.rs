@@ -7,15 +7,17 @@
 //!   thread that created them). That thread also supervises the stream: when
 //!   the device reports an error or stops delivering audio it is reopened
 //!   with backoff — e.g. after a USB interface is unplugged and plugged back.
-//! * The real-time callback only down-mixes to mono f32, updates level meters
+//! * The real-time callback reduces to mono (louder channel by default — some
+//!   receivers carry the voice on one channel only), applies the software
+//!   gain, updates level meters
 //!   and does a non-blocking `try_send`. Resampling happens on the dispatcher
 //!   thread (see `capture.rs`), never in the audio callback.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use live_core::audio::{downmix_f32, downmix_i16, measure};
+use live_core::audio::{measure, ChannelMode, ChannelPicker, I32Decoder};
 use live_core::metrics::{names, Basis, Metrics};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -43,6 +45,16 @@ pub struct AudioStats {
     pub silence_filled_ms: AtomicU64,
     /// Errors reported by the audio driver (non-fatal ones included).
     pub stream_errors: AtomicU64,
+    /// Software input gain in tenths of a dB (0 = unity).
+    pub gain_db_x10: AtomicI32,
+    /// `ChannelMode::as_u8` (0 = auto).
+    pub channel_mode: AtomicU8,
+    /// Per-channel peak hold (L, R) since the last status read.
+    ch_peak_bits: [AtomicU32; 2],
+    /// I32 input detected as right-aligned 24-bit.
+    pub i32_right_aligned: AtomicBool,
+    /// (sample format, channels) of the open device.
+    format: Mutex<(String, u16)>,
     state: Mutex<(String, Option<String>, String, u32)>, // (state, error, device, rate)
 }
 
@@ -62,6 +74,14 @@ pub struct AudioStatusView {
     pub device_reconnects: u64,
     pub silence_filled_ms: u64,
     pub stream_errors: u64,
+    pub sample_format: String,
+    pub channels: u16,
+    /// Per-channel peaks (L, R) before gain, since the previous read.
+    pub peak_left: f32,
+    pub peak_right: f32,
+    pub gain_db: f32,
+    pub channel_mode: String,
+    pub i32_right_aligned: bool,
 }
 
 impl AudioStats {
@@ -85,6 +105,29 @@ impl AudioStats {
         }
     }
 
+    pub fn set_format(&self, sample_format: &str, channels: u16) {
+        *self.format.lock().unwrap() = (sample_format.to_string(), channels);
+    }
+
+    pub fn record_channel_peaks(&self, peaks: &[f32]) {
+        for (i, p) in peaks.iter().take(2).enumerate() {
+            self.ch_peak_bits[i].fetch_max(p.max(0.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Linear software gain.
+    pub fn gain(&self) -> f32 {
+        let db = self.gain_db_x10.load(Ordering::Relaxed) as f32 / 10.0;
+        if db == 0.0 { 1.0 } else { 10f32.powf(db / 20.0) }
+    }
+
+    /// Set software gain (dB, clamped 0..+40) and channel mode.
+    pub fn set_input_options(&self, gain_db: f32, channel_mode: ChannelMode) {
+        let db = if gain_db.is_finite() { gain_db.clamp(0.0, 40.0) } else { 0.0 };
+        self.gain_db_x10.store((db * 10.0).round() as i32, Ordering::Relaxed);
+        self.channel_mode.store(channel_mode.as_u8(), Ordering::Relaxed);
+    }
+
     pub fn set_device(&self, device: &str, rate: u32) {
         let mut s = self.state.lock().unwrap();
         s.2 = device.to_string();
@@ -94,6 +137,7 @@ impl AudioStats {
     /// Snapshot; resets the peak-hold.
     pub fn view(&self) -> AudioStatusView {
         let (state, error, device, rate) = self.state.lock().unwrap().clone();
+        let fmt = self.format.lock().unwrap().clone();
         let now = live_core::metrics::unix_ms();
         let last = self.last_frame_unix_ms.load(Ordering::Relaxed);
         let last_clip = self.last_clip_unix_ms.load(Ordering::Relaxed);
@@ -111,6 +155,19 @@ impl AudioStats {
             device_reconnects: self.device_reconnects.load(Ordering::Relaxed),
             silence_filled_ms: self.silence_filled_ms.load(Ordering::Relaxed),
             stream_errors: self.stream_errors.load(Ordering::Relaxed),
+            sample_format: fmt.0,
+            channels: fmt.1,
+            peak_left: f32::from_bits(self.ch_peak_bits[0].swap(0, Ordering::Relaxed)),
+            peak_right: f32::from_bits(self.ch_peak_bits[1].swap(0, Ordering::Relaxed)),
+            gain_db: self.gain_db_x10.load(Ordering::Relaxed) as f32 / 10.0,
+            channel_mode: match ChannelMode::from_u8(self.channel_mode.load(Ordering::Relaxed)) {
+                ChannelMode::Auto => "auto",
+                ChannelMode::Mix => "mix",
+                ChannelMode::Left => "left",
+                ChannelMode::Right => "right",
+            }
+            .into(),
+            i32_right_aligned: self.i32_right_aligned.load(Ordering::Relaxed),
         }
     }
 }
@@ -313,6 +370,7 @@ fn open_stream(
     };
     let err_flag = failed.clone();
     let err_stats = stats.clone();
+    let stats_i32 = stats.clone();
     let err_fn = move |err: cpal::StreamError| {
         eprintln!("[mic] stream error: {err}");
         err_stats.stream_errors.fetch_add(1, Ordering::Relaxed);
@@ -325,9 +383,18 @@ fn open_stream(
         }
     };
 
-    // Shared per-callback handling for every sample format.
+    // Shared per-callback handling for every sample format: interleaved f32
+    // in, channel selection + gain, level metering, non-blocking hand-off.
+    let fmt_name = format!("{:?}", config.sample_format());
+    stats.set_format(&fmt_name, channels as u16);
     let mut counter: u32 = 0;
-    let mut deliver = move |mono: Vec<f32>, info: &cpal::InputCallbackInfo| {
+    let mut picker = ChannelPicker::default();
+    let mut deliver = move |inter: &[f32], info: &cpal::InputCallbackInfo| {
+        let mode = ChannelMode::from_u8(stats.channel_mode.load(Ordering::Relaxed));
+        let gain = stats.gain();
+        let mut mono = Vec::with_capacity(inter.len() / channels.max(1));
+        let peaks = picker.process(inter, channels, mode, gain, &mut mono);
+        stats.record_channel_peaks(&peaks);
         let lvl = measure(&mono);
         stats.record_level(lvl.peak, lvl.rms, lvl.clipped);
         let ts = info.timestamp();
@@ -349,49 +416,52 @@ fn open_stream(
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => device.build_input_stream(
             &stream_config,
-            move |data: &[f32], info: &cpal::InputCallbackInfo| {
-                let mut mono = Vec::with_capacity(data.len() / channels.max(1));
-                downmix_f32(data, channels, &mut mono);
-                deliver(mono, info);
-            },
+            move |data: &[f32], info: &cpal::InputCallbackInfo| deliver(data, info),
             err_fn,
             None,
         ),
-        cpal::SampleFormat::I16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[i16], info: &cpal::InputCallbackInfo| {
-                let mut mono = Vec::with_capacity(data.len() / channels.max(1));
-                downmix_i16(data, channels, &mut mono);
-                deliver(mono, info);
-            },
-            err_fn,
-            None,
-        ),
-        cpal::SampleFormat::I32 => device.build_input_stream(
-            &stream_config,
-            move |data: &[i32], info: &cpal::InputCallbackInfo| {
-                let ch = channels.max(1);
-                let inv = 1.0 / (ch as f32 * 2_147_483_648.0);
-                let mono: Vec<f32> = data.chunks_exact(ch).map(|f| f.iter().map(|&s| s as f32).sum::<f32>() * inv).collect();
-                deliver(mono, info);
-            },
-            err_fn,
-            None,
-        ),
-        cpal::SampleFormat::U16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[u16], info: &cpal::InputCallbackInfo| {
-                let ch = channels.max(1);
-                let inv = 1.0 / (ch as f32 * 32768.0);
-                let mono: Vec<f32> = data
-                    .chunks_exact(ch)
-                    .map(|f| f.iter().map(|&s| s as f32 - 32768.0).sum::<f32>() * inv)
-                    .collect();
-                deliver(mono, info);
-            },
-            err_fn,
-            None,
-        ),
+        cpal::SampleFormat::I16 => {
+            let mut buf = Vec::new();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i16], info: &cpal::InputCallbackInfo| {
+                    buf.clear();
+                    buf.extend(data.iter().map(|&s| s as f32 / 32768.0));
+                    deliver(&buf, info);
+                },
+                err_fn,
+                None,
+            )
+        }
+        cpal::SampleFormat::I32 => {
+            let mut buf = Vec::new();
+            let mut decoder = I32Decoder::default();
+            let aligned_flag = stats_i32.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i32], info: &cpal::InputCallbackInfo| {
+                    buf.clear();
+                    decoder.decode(data, &mut buf);
+                    aligned_flag.i32_right_aligned.store(decoder.right_aligned, Ordering::Relaxed);
+                    deliver(&buf, info);
+                },
+                err_fn,
+                None,
+            )
+        }
+        cpal::SampleFormat::U16 => {
+            let mut buf = Vec::new();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[u16], info: &cpal::InputCallbackInfo| {
+                    buf.clear();
+                    buf.extend(data.iter().map(|&s| (s as f32 - 32768.0) / 32768.0));
+                    deliver(&buf, info);
+                },
+                err_fn,
+                None,
+            )
+        }
         other => return Err(format!("Unsupported input sample format: {other:?}")),
     }
     .map_err(|e| format!("cannot open \"{name}\": {e}"))?;

@@ -345,6 +345,7 @@ class App {
             this._setMeterEnabled(!this._meterEnabled());
         });
         this._renderMeterButton();
+        this._bindInputOptions();
         if (this._meterEnabled()) setTimeout(() => this._setMeterEnabled(true), 500);
 
         // Clear button — clears display only (auto-save happens on stop)
@@ -1067,6 +1068,7 @@ class App {
 
     _applySettings(settings) {
         this._applyFillerFilter();
+        this._applyInputOptions();
         // Update overlay opacity
         const overlayView = document.getElementById('overlay-view');
         overlayView.style.opacity = settings.overlay_opacity || 0.85;
@@ -1954,8 +1956,42 @@ class App {
     }
 
     _renderMeterButton() {
+        const on = this._meterEnabled();
         const btn = document.getElementById('btn-mic-meter');
-        if (btn) btn.classList.toggle('active', this._meterEnabled());
+        if (btn) btn.classList.toggle('active', on);
+        const tools = document.getElementById('mic-tools');
+        if (tools) tools.style.display = on ? '' : 'none';
+    }
+
+    /** Push saved gain / channel mode to the capture and the controls. */
+    _applyInputOptions() {
+        const s = settingsManager.get();
+        const gain = Number(s.input_gain_db) || 0;
+        const mode = s.input_channel_mode || 'auto';
+        const g = document.getElementById('mic-gain');
+        const gv = document.getElementById('mic-gain-val');
+        const ch = document.getElementById('mic-channel');
+        if (g && document.activeElement !== g) g.value = String(gain);
+        if (gv) gv.textContent = `+${gain} dB`;
+        if (ch) ch.value = mode;
+        invoke('audio_set_input_options', { gainDb: gain, channelMode: mode }).catch(() => {});
+    }
+
+    _bindInputOptions() {
+        const g = document.getElementById('mic-gain');
+        const gv = document.getElementById('mic-gain-val');
+        const ch = document.getElementById('mic-channel');
+        let saveTimer = null;
+        const push = () => {
+            const gain = Number(g?.value) || 0;
+            const mode = ch?.value || 'auto';
+            if (gv) gv.textContent = `+${gain} dB`;
+            invoke('audio_set_input_options', { gainDb: gain, channelMode: mode }).catch(() => {});
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => settingsManager.save({ input_gain_db: gain, input_channel_mode: mode }), 300);
+        };
+        g?.addEventListener('input', push);
+        ch?.addEventListener('change', push);
     }
 
     /** Open the selected input for level measurement only. */
@@ -2018,6 +2054,15 @@ class App {
                     : peak > 0 ? `${Math.max(-60, Math.round(20 * Math.log10(peak)))} dB` : '−∞ dB';
                 label.classList.toggle('bad', noData || !!a.clipping_recent);
             }
+            const db = (v) => (v > 0 ? `${Math.max(-90, Math.round(20 * Math.log10(v)))} dB` : '−∞');
+            const diag = document.getElementById('mic-diag');
+            if (diag) {
+                diag.textContent = noData ? `${a.device || 'micro'}: chưa nhận dữ liệu`
+                    : `${a.sample_format || '?'} · ${a.channels || '?'} kênh · ${a.sample_rate ? a.sample_rate / 1000 : '?'} kHz` +
+                      (a.channels > 1 ? ` · L ${db(a.peak_left)} / R ${db(a.peak_right)}` : ` · ${db(a.peak_left)}`) +
+                      (a.i32_right_aligned ? ' · 24-bit căn phải (đã tự bù)' : '') +
+                      (a.stream_errors ? ` · ${a.stream_errors} lỗi driver` : '');
+            }
             meter.title = `${a.device || 'Micro'} · ${a.sample_rate ? a.sample_rate / 1000 + ' kHz' : ''} · peak ${peak.toFixed(3)}` +
                 (a.stream_errors ? ` · ${a.stream_errors} lỗi driver` : '') + (a.device_reconnects ? ` · ${a.device_reconnects} lần kết nối lại` : '') +
                 (a.error ? ` · ${a.error}` : '');
@@ -2044,6 +2089,8 @@ class App {
         const label = document.getElementById('mic-meter-label');
         if (meter) meter.style.display = 'none';
         if (label) label.style.display = 'none';
+        const diag = document.getElementById('mic-diag');
+        if (diag) diag.textContent = '';
     }
 
     /** Selected microphone device name, or null for the system default. */

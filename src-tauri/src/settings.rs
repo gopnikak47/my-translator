@@ -38,6 +38,12 @@ pub struct Settings {
     /// Microphone input device name ("" = system default input).
     #[serde(default)]
     pub input_device: String,
+    /// Software input gain in dB (0 = unity).
+    #[serde(default)]
+    pub input_gain_db: f32,
+    /// Multi-channel input handling: "auto" | "mix" | "left" | "right".
+    #[serde(default = "default_channel_mode")]
+    pub input_channel_mode: String,
     /// Overlay opacity: 0.0 - 1.0
     pub overlay_opacity: f64,
     /// Font size in px
@@ -120,6 +126,8 @@ impl Default for Settings {
             target_language: "vi".to_string(),
             audio_source: "system".to_string(),
             input_device: String::new(),
+            input_gain_db: 0.0,
+            input_channel_mode: default_channel_mode(),
             overlay_opacity: 0.85,
             font_size: 16,
             max_lines: 5,
@@ -152,6 +160,10 @@ impl Default for Settings {
             live: live_core::LiveSettings::default(),
         }
     }
+}
+
+fn default_channel_mode() -> String {
+    "auto".to_string()
 }
 
 /// Serde default for `local_tts_speed` (field-level default would give 0.0).
