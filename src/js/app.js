@@ -134,6 +134,8 @@ class App {
                 root: document.getElementById('event-panel'),
                 toast: (m, t) => this._showToast(m, t),
                 isMainRunning: () => this.isRunning,
+                // Release the mic-test capture so Event mode can open its input.
+                beforeStart: async () => { this._stopMicMeter(); await this._stopMonitor(); },
             });
             await this.eventConsole.init();
         } catch (err) {
@@ -337,6 +339,13 @@ class App {
         devSel?.addEventListener('mousedown', () => this._refreshInputDevices());
         devSel?.addEventListener('focus', () => this._refreshInputDevices());
         devSel?.addEventListener('change', (e) => this._setInputDevice(e.target.value));
+
+        // Level meter toggle (works without translating — for mic testing)
+        document.getElementById('btn-mic-meter')?.addEventListener('click', () => {
+            this._setMeterEnabled(!this._meterEnabled());
+        });
+        this._renderMeterButton();
+        if (this._meterEnabled()) setTimeout(() => this._setMeterEnabled(true), 500);
 
         // Clear button — clears display only (auto-save happens on stop)
         document.getElementById('btn-clear').addEventListener('click', async () => {
@@ -1913,6 +1922,7 @@ class App {
             this.currentSource = source;
             this._updateSourceButtons();
             this._showToast(`Source: ${label}`, 'success');
+            this._restartMonitorIfActive();
         }
     }
 
@@ -1923,43 +1933,117 @@ class App {
         if (dev) dev.style.display = this.currentSource === 'system' ? 'none' : '';
     }
 
-    /** Poll the capture level/health while a session runs (meter + warnings). */
+    // ─── Input level meter (toggle 🎚) ─────────────────────────
+    // When enabled the meter also works without translating: the mic is
+    // opened for measurement only (no engine connected, no API cost).
+
+    _meterEnabled() {
+        try { return localStorage.getItem('mic_meter') === '1'; } catch { return false; }
+    }
+
+    async _setMeterEnabled(on) {
+        try { localStorage.setItem('mic_meter', on ? '1' : '0'); } catch {}
+        this._renderMeterButton();
+        if (on) {
+            if (!this.isRunning) await this._startMonitor();
+            this._startMicMeter();
+        } else {
+            this._stopMicMeter();
+            await this._stopMonitor();
+        }
+    }
+
+    _renderMeterButton() {
+        const btn = document.getElementById('btn-mic-meter');
+        if (btn) btn.classList.toggle('active', this._meterEnabled());
+    }
+
+    /** Open the selected input for level measurement only. */
+    async _startMonitor() {
+        if (this.isRunning || this.eventConsole?.provider) return;
+        await this._stopMonitor();
+        try {
+            const channel = new Channel();
+            channel.onmessage = () => {}; // audio discarded — meter reads backend stats
+            await invoke('start_capture', { source: this.currentSource, device: this._captureDevice(), channel });
+            this._monitoring = true;
+        } catch (err) {
+            this._monitoring = false;
+            this._showToast(`Không mở được micro để đo: ${err}`, 'error');
+        }
+    }
+
+    async _stopMonitor() {
+        if (!this._monitoring) return;
+        this._monitoring = false;
+        if (!this.isRunning) {
+            try { await invoke('stop_capture'); } catch {}
+        }
+    }
+
+    /** Re-open the measurement capture after a source/device change. */
+    async _restartMonitorIfActive() {
+        if (this._meterEnabled() && !this.isRunning) {
+            await this._startMonitor();
+            this._startMicMeter();
+        }
+    }
+
     _startMicMeter() {
         const meter = document.getElementById('mic-meter');
         const fill = document.getElementById('mic-meter-fill');
-        if (!meter || !fill || this._micMeterTimer) return;
+        const label = document.getElementById('mic-meter-label');
+        if (!meter || !fill || !this._meterEnabled()) return;
         meter.style.display = '';
+        if (label) label.style.display = '';
+        if (this._micMeterTimer) return;
         this._micWarned = false;
         this._micMeterTimer = setInterval(async () => {
-            if (!this.isRunning) return this._stopMicMeter();
+            if (!this.isRunning && !this._monitoring) {
+                fill.style.width = '0%';
+                if (label) label.textContent = '—';
+                return;
+            }
             let a;
             try { a = await invoke('audio_status'); } catch { return; }
-            const pct = Math.min(100, Math.round(Math.sqrt(a.peak || 0) * 100));
-            fill.style.width = pct + '%';
+            const peak = a.peak || 0;
+            fill.style.width = Math.min(100, Math.round(Math.sqrt(peak) * 100)) + '%';
             const noData = a.ms_since_audio == null || a.ms_since_audio > 2000;
-            const silent = !noData && (a.peak || 0) < 0.003;
+            const silent = !noData && peak < 0.003;
             meter.classList.toggle('bad', a.state !== 'running' || noData);
             meter.classList.toggle('warn', !!a.clipping_recent || silent);
+            if (label) {
+                label.textContent = noData ? 'không tín hiệu'
+                    : a.clipping_recent ? 'CLIP'
+                    : peak > 0 ? `${Math.max(-60, Math.round(20 * Math.log10(peak)))} dB` : '−∞ dB';
+                label.classList.toggle('bad', noData || !!a.clipping_recent);
+            }
+            meter.title = `${a.device || 'Micro'} · ${a.sample_rate ? a.sample_rate / 1000 + ' kHz' : ''} · peak ${peak.toFixed(3)}` +
+                (a.stream_errors ? ` · ${a.stream_errors} lỗi driver` : '') + (a.device_reconnects ? ` · ${a.device_reconnects} lần kết nối lại` : '') +
+                (a.error ? ` · ${a.error}` : '');
+            // Toasts only while translating (the dB label is enough when testing).
             let msg = '';
-            if (a.state === 'reconnecting') msg = `Mất tín hiệu micro — đang kết nối lại${a.error ? ': ' + a.error : ''}`;
-            else if (noData) msg = `Micro "${a.device || 'mặc định'}" không gửi âm thanh. Kiểm tra receiver đã bật/kết nối với bộ phát chưa.`;
-            else if (a.clipping_recent) msg = 'Âm thanh bị vỡ (clipping) — giảm gain trên receiver/mixer.';
-            meter.title = `${a.device || 'Micro'} · ${a.sample_rate ? a.sample_rate / 1000 + ' kHz' : ''} · peak ${(a.peak || 0).toFixed(3)}` +
-                (a.stream_errors ? ` · ${a.stream_errors} lỗi driver` : '') + (a.device_reconnects ? ` · ${a.device_reconnects} lần kết nối lại` : '');
+            if (this.isRunning) {
+                if (a.state === 'reconnecting') msg = `Mất tín hiệu micro — đang kết nối lại${a.error ? ': ' + a.error : ''}`;
+                else if (noData) msg = `Micro "${a.device || 'mặc định'}" không gửi âm thanh. Kiểm tra receiver đã bật/kết nối với bộ phát chưa.`;
+                else if (a.clipping_recent) msg = 'Âm thanh bị vỡ (clipping) — giảm gain trên receiver/mixer.';
+            }
             if (msg && !this._micWarned) {
                 this._micWarned = true;
                 this._showToast(msg, 'error');
             } else if (!msg) {
                 this._micWarned = false;
             }
-        }, 250);
+        }, 200);
     }
 
     _stopMicMeter() {
         clearInterval(this._micMeterTimer);
         this._micMeterTimer = null;
         const meter = document.getElementById('mic-meter');
+        const label = document.getElementById('mic-meter-label');
         if (meter) meter.style.display = 'none';
+        if (label) label.style.display = 'none';
     }
 
     /** Selected microphone device name, or null for the system default. */
@@ -2005,6 +2089,7 @@ class App {
             await this.start();
         } else {
             this._showToast(`Micro: ${label}`, 'success');
+            await this._restartMonitorIfActive();
         }
         this._refreshInputDevices();
     }
@@ -2443,6 +2528,7 @@ class App {
             await this._startSonioxMode(settings);
         }
 
+        this._monitoring = false; // engine's capture replaced the measurement one
         if (this.isRunning) this._startMicMeter();
 
         // Start TTS if enabled — skipped in realtime modes (built-in audio)
@@ -2939,7 +3025,7 @@ class App {
     // into a new file is stopSession()'s job.
     async pause() {
         this.isRunning = false;
-        this._stopMicMeter();
+        if (!this._meterEnabled()) this._stopMicMeter();
         this._updateStartButton();
         this._setEnginePillLocked(false);
 
@@ -3009,6 +3095,8 @@ class App {
 
         // sessionStartTime stays — pausing keeps the same session file, which
         // lives across many Start/Pause cycles. stopSession() resets it.
+        // Meter toggle on: keep measuring the input after translation stops.
+        if (this._meterEnabled() && !this._closing) this._restartMonitorIfActive();
     }
 
     // Stop: pause (if running), finalize the current session file, then start a
@@ -3049,6 +3137,7 @@ class App {
     // that finalizes the file), then best-effort engine teardown via pause().
     // Both are idempotent, so running this more than once is harmless.
     async _flushOnExit() {
+        try { this._stopMicMeter(); await this._stopMonitor(); } catch {}
         try { this.eventConsole?.shutdown(); } catch (e) { console.error('[App] exit flush (event console) failed:', e); }
         try { await sessionStore.endSession(); } catch (e) { console.error('[App] exit flush (endSession) failed:', e); }
         try { await this.pause(); } catch (e) { console.error('[App] exit flush (pause) failed:', e); }

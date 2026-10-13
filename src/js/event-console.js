@@ -74,10 +74,11 @@ function fmtMs(v) {
 }
 
 export class EventConsole {
-    constructor({ root, toast, isMainRunning }) {
+    constructor({ root, toast, isMainRunning, beforeStart }) {
         this.root = root;
         this.toast = toast || (() => {});
         this.isMainRunning = isMainRunning || (() => false);
+        this.beforeStart = beforeStart || (async () => {});
         this.provider = null;            // running provider
         this.status = null;
         this.soniox = null;
@@ -425,6 +426,7 @@ export class EventConsole {
         this.busy = true;
         this._setButtons();
         try {
+            await this.beforeStart();
             await this._flushSave();
             await settingsManager.save({ live: { ...this.live, provider } });
             await invoke('live_start', { args: { provider } });

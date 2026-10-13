@@ -2385,9 +2385,30 @@ body:not(.activity-live) .floating-controls { display: none; }
   font-size: 11px;
 }
 
-/* Input level meter (shown while translating) */
+/* Input level meter (toggle 🎚; also works without translating) */
+.mic-meter-btn {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+.mic-meter-btn.active { opacity: 1; border-color: var(--accent); background: var(--accent-glow); }
+.mic-meter-label {
+  margin-left: 6px;
+  min-width: 52px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.mic-meter-label.bad { color: var(--error); }
 .mic-meter {
-  width: 44px;
+  width: 90px;
   height: 6px;
   margin-left: 6px;
   border-radius: 3px;

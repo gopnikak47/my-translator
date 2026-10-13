@@ -97,7 +97,9 @@
         <select id="select-audio-device" class="source-select device-select" title="Thiết bị micro (input)" style="display:none">
           <option value="">🎙 Mặc định hệ thống</option>
         </select>
+        <button id="btn-mic-meter" class="mic-meter-btn" type="button" title="Bật/tắt thanh đo mức micro (đo được cả khi chưa dịch — không tốn API)">🎚</button>
         <span id="mic-meter" class="mic-meter" title="Mức âm thanh đầu vào" style="display:none"><span id="mic-meter-fill"></span></span>
+        <span id="mic-meter-label" class="mic-meter-label" style="display:none">—</span>
       </div>
 
       <div id="transcript-content" data-tauri-drag-region>
